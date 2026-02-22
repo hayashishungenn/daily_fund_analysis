@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+_XQ_UNSUPPORTED_CODES: set[str] = set()
 
 
 @dataclass
@@ -90,12 +91,30 @@ def _trend_signal(ma5: Optional[float], ma10: Optional[float], ma20: Optional[fl
     return "震荡"
 
 
+def _should_skip_xq(code: str) -> bool:
+    """
+    这类代码在 xq 基本信息接口上返回不稳定，优先走东方财富接口。
+    - 场内基金常见前缀: 15/16/18/50/51/52/56/58/59
+    - 运行中若某代码已命中过 xq 无 data，也直接跳过
+    """
+    code = (code or "").strip()
+    if code in _XQ_UNSUPPORTED_CODES:
+        return True
+    if len(code) == 6 and code[:2] in {"15", "16", "18", "50", "51", "52", "56", "58", "59"}:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # 数据获取
 # ---------------------------------------------------------------------------
 
 def fetch_fund_basic_info(code: str) -> FundInfo:
     """获取基金基本信息"""
+    if _should_skip_xq(code):
+        logger.info(f"[{code}] 跳过 xq 基本信息接口，直接使用东方财富接口")
+        return _fetch_basic_info_fallback(code)
+
     try:
         import akshare as ak
         df = ak.fund_individual_basic_info_xq(symbol=code)
@@ -113,6 +132,14 @@ def fetch_fund_basic_info(code: str) -> FundInfo:
             manager=str(info_dict.get("基金经理", info_dict.get("经理", "未知"))),
             size_billion=float(info_dict.get("基金规模", 0) or 0),
         )
+    except KeyError as e:
+        # xq 返回结构缺失 data 字段: 将该代码标记为不再尝试 xq
+        if str(e).strip("'\"") == "data":
+            _XQ_UNSUPPORTED_CODES.add(code)
+            logger.info(f"[{code}] xq 返回缺少 data 字段，已切换为东方财富接口")
+            return _fetch_basic_info_fallback(code)
+        logger.warning(f"[{code}] 获取基金基本信息失败（xq）: {e}，尝试备用接口...")
+        return _fetch_basic_info_fallback(code)
     except Exception as e:
         logger.warning(f"[{code}] 获取基金基本信息失败（xq）: {e}，尝试备用接口...")
         return _fetch_basic_info_fallback(code)
