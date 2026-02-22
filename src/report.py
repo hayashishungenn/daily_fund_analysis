@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-报告生成模块 - 生成 Markdown 格式的基金分析报告
+报告生成模块
+- 生成 Markdown 格式的基金每日分析报告（simple / full）
+- 报告结构参考: https://github.com/hayashishungenn/daily_stock_analysis
 """
 import logging
 from datetime import datetime, timezone, timedelta
@@ -332,6 +334,7 @@ def _generate_full_report(
         "",
         "> ⚠️ 本报告由程序自动生成，仅供参考，不构成投资建议。",
         "> 数据来源：东方财富（akshare），AI 分析：Gemini / OpenAI",
+        "> 报告结构参考：https://github.com/hayashishungenn/daily_stock_analysis",
     ]
 
     return "\n".join(header + blocks + footer)
@@ -415,6 +418,7 @@ def _generate_simple_report(
     lines += [
         "",
         "> ⚠️ 本简报仅供快速浏览，不构成投资建议。",
+        "> 报告结构参考：https://github.com/hayashishungenn/daily_stock_analysis",
     ]
     return "\n".join(lines)
 

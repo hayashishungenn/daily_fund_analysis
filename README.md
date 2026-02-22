@@ -5,7 +5,8 @@
 - Telegram Bot
 - 邮件（QQ/163/Gmail/Outlook 等 SMTP）
 
-项目报告风格与 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 对齐，支持：
+这是一个**基金每日分析报告**项目，报告结构参考  
+[hayashishungenn/daily_stock_analysis](https://github.com/hayashishungenn/daily_stock_analysis)，支持：
 
 - `simple`：精简快读（适合手机快速浏览）
 - `full`：完整仪表盘（适合邮件/复盘）
@@ -378,4 +379,3 @@ daily_fund_analysis/
 ## 免责声明
 
 本项目仅用于学习与研究，不构成任何投资建议。基金有风险，投资需谨慎。
-
