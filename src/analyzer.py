@@ -30,7 +30,16 @@ def _build_prompt(data: FundAnalysisData) -> str:
         pairs = list(zip(hist.dates, hist.navs))[-10:]
         nav_series = " | ".join(f"{d}: {n:.4f}" for d, n in pairs)
 
-    return f"""你是一位专注于国内公募基金的资深分析师，请根据以下数据对该基金进行简短分析并给出操作建议。
+    # Pre-compute optional MA strings — inline :.4f inside ternary causes format spec errors
+    def _fmt_ma(v) -> str:
+        try:
+            return f"{float(v):.4f}" if v is not None else "N/A"
+        except (TypeError, ValueError):
+            return "N/A"
+    ma5_str = _fmt_ma(hist.ma5)
+    ma10_str = _fmt_ma(hist.ma10)
+    ma20_str = _fmt_ma(hist.ma20)
+    prompt = f"""你是一位专注于国内公募基金的资深分析师，请根据以下数据对该基金进行简短分析并给出操作建议。
 
 【基金信息】
 代码：{info.code}
@@ -46,9 +55,9 @@ def _build_prompt(data: FundAnalysisData) -> str:
 近30日收益：{hist.ret_30d:+.2f}%
 近90日收益：{hist.ret_90d:+.2f}%
 最大回撤：{hist.max_drawdown_pct:.2f}%
-MA5：{hist.ma5:.4f if hist.ma5 else 'N/A'}
-MA10：{hist.ma10:.4f if hist.ma10 else 'N/A'}
-MA20：{hist.ma20:.4f if hist.ma20 else 'N/A'}
+MA5：{ma5_str}
+MA10：{ma10_str}
+MA20：{ma20_str}
 趋势信号：{hist.trend_signal}
 
 【近10日净值】
@@ -59,6 +68,7 @@ MA20：{hist.ma20:.4f if hist.ma20 else 'N/A'}
 操作建议：<加仓|持有|减仓|观望>
 理由：<100字以内，要有具体数据支撑>
 风险提示：<30字以内>"""
+    return prompt
 
 
 def _rule_engine_advice(data: FundAnalysisData) -> dict:

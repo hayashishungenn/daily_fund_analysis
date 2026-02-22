@@ -24,6 +24,7 @@ class Config:
     # 自选基金列表
     fund_list: List[str] = field(default_factory=list)
     report_days: int = 30
+    report_type: str = "full"  # simple / full
 
     # AI 配置
     gemini_api_key: Optional[str] = None
@@ -43,6 +44,8 @@ class Config:
     email_password: Optional[str] = None
     email_receivers: List[str] = field(default_factory=list)
     email_sender_name: str = "基金每日分析助手"
+    email_dedup_enabled: bool = True
+    email_dedup_window_minutes: int = 180
 
     # 系统
     log_dir: str = "./logs"
@@ -68,6 +71,10 @@ class Config:
         warnings = []
         if not self.fund_list:
             warnings.append("⚠️  FUND_LIST 未配置，将使用默认示例基金")
+        if self.report_type not in ("simple", "full"):
+            warnings.append(
+                f"⚠️  REPORT_TYPE={self.report_type} 非法，将自动回退为 full（可选: simple/full）"
+            )
         if not self.has_ai():
             warnings.append("⚠️  未配置 AI API Key（GEMINI_API_KEY / OPENAI_API_KEY），将使用规则引擎生成建议")
         if not self.has_notification():
@@ -82,6 +89,7 @@ def get_config() -> Config:
     return Config(
         fund_list=_split_list(fund_list_raw),
         report_days=int(os.getenv("REPORT_DAYS", "30")),
+        report_type=(os.getenv("REPORT_TYPE", "full") or "full").strip().lower(),
 
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
@@ -98,6 +106,8 @@ def get_config() -> Config:
         email_password=os.getenv("EMAIL_PASSWORD") or None,
         email_receivers=_split_list(email_receivers_raw) if email_receivers_raw else [],
         email_sender_name=os.getenv("EMAIL_SENDER_NAME", "基金每日分析助手"),
+        email_dedup_enabled=os.getenv("EMAIL_DEDUP_ENABLED", "true").lower() == "true",
+        email_dedup_window_minutes=int(os.getenv("EMAIL_DEDUP_WINDOW_MINUTES", "180")),
 
         log_dir=os.getenv("LOG_DIR", "./logs"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),

@@ -20,6 +20,10 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     proxy_url = f"http://{proxy_host}:{proxy_port}"
     os.environ["http_proxy"] = proxy_url
     os.environ["https_proxy"] = proxy_url
+else:
+    # 显式关闭代理，避免继承到系统/会话中的残留代理变量
+    for key in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        os.environ.pop(key, None)
 
 import argparse
 import logging
@@ -30,7 +34,7 @@ from typing import List, Optional
 
 from src.config import get_config
 from src.logging_config import setup_logging
-from src.fund_data import fetch_fund_data, FundAnalysisData
+from src.fund_data import fetch_fund_data, FundAnalysisData, FundInfo, FundHistory
 from src.analyzer import analyze_fund
 from src.report import generate_report, save_report
 from src.notification import send_report
@@ -64,6 +68,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--schedule", action="store_true", help="启用定时任务模式")
     parser.add_argument("--schedule-time", type=str, default=None, help="定时执行时间 HH:MM，默认 15:35")
     parser.add_argument("--no-run-immediately", action="store_true", help="定时模式启动时不立即执行")
+    parser.add_argument(
+        "--report-type",
+        type=str,
+        choices=["simple", "full"],
+        default=None,
+        help="报告格式：simple(精简) / full(完整)，默认读取 REPORT_TYPE",
+    )
     return parser.parse_args()
 
 
@@ -76,6 +87,7 @@ def run_analysis(
     dry_run: bool = False,
     send_notification: bool = True,
     max_workers: int = 1,
+    report_type: Optional[str] = None,
 ):
     """执行完整分析流程并推送报告"""
     config = get_config()
@@ -83,16 +95,37 @@ def run_analysis(
     logger.info(f"开始分析 {len(fund_codes)} 只基金: {', '.join(fund_codes)}")
 
     # === 1. 数据获取（并发） ===
-    all_data: List[FundAnalysisData] = []
+    data_by_code = {}
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
         futures = {pool.submit(fetch_fund_data, code, config.report_days): code for code in fund_codes}
         for future in as_completed(futures):
             code = futures[future]
             try:
                 data = future.result()
-                all_data.append(data)
             except Exception as e:
                 logger.error(f"[{code}] 数据获取线程异常: {e}")
+                data = FundAnalysisData(
+                    info=FundInfo(code=code),
+                    history=FundHistory(code=code),
+                    error=f"数据获取线程异常: {e}",
+                )
+            data_by_code[code] = data
+
+    # 按用户配置顺序重建结果，确保输出覆盖全部 FUND_LIST 代码
+    all_data: List[FundAnalysisData] = []
+    for code in fund_codes:
+        data = data_by_code.get(code)
+        if data is None:
+            logger.error(f"[{code}] 未返回数据，自动填充占位结果")
+            data = FundAnalysisData(
+                info=FundInfo(code=code),
+                history=FundHistory(code=code),
+                error="未返回数据",
+            )
+        all_data.append(data)
+
+    if len(all_data) != len(fund_codes):
+        logger.warning(f"数据数量异常: 输入 {len(fund_codes)}，输出 {len(all_data)}")
 
     if not all_data:
         logger.error("所有基金数据获取失败，退出")
@@ -113,7 +146,17 @@ def run_analysis(
         logger.info(f"  [{data.info.code}] {data.info.name} -> {analysis['advice']}")
 
     # === 4. 生成报告 ===
-    report_content = generate_report(results, report_days=config.report_days)
+    effective_report_type = (report_type or config.report_type or "full").strip().lower()
+    if effective_report_type not in ("simple", "full"):
+        logger.warning(f"未知报告格式 {effective_report_type}，自动回退为 full")
+        effective_report_type = "full"
+
+    logger.info(f"使用报告格式: {effective_report_type}")
+    report_content = generate_report(
+        results,
+        report_days=config.report_days,
+        report_type=effective_report_type,
+    )
     report_path = save_report(report_content, report_dir="./reports")
 
     # 打印到控制台
@@ -170,6 +213,7 @@ def main() -> int:
             dry_run=args.dry_run,
             send_notification=not args.no_notify,
             max_workers=config.max_workers,
+            report_type=args.report_type,
         )
 
     try:
