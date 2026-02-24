@@ -34,7 +34,7 @@ from typing import List, Optional
 
 from src.config import get_config
 from src.logging_config import setup_logging
-from src.fund_data import fetch_fund_data, FundAnalysisData, FundInfo, FundHistory
+from src.fund_data import fetch_fund_data, fetch_market_context, FundAnalysisData, FundInfo, FundHistory
 from src.analyzer import analyze_fund
 from src.report import generate_report, save_report
 from src.notification import send_report
@@ -242,3 +242,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

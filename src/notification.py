@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-通知服务 - Telegram Bot + 邮件（SMTP）
+通知服务 - Telegram Bot + 邮件（SMTP）+ PushPlus + 企业微信 Webhook
 """
 import hashlib
+import html as _html
 import json
 import logging
 import re
@@ -59,7 +60,6 @@ def _md_to_html(md: str) -> str:
         code { padding: 0.2em 0.4em; background-color: rgba(27,31,35,0.05); border-radius: 3px; }
         blockquote { color: #6a737d; border-left: 0.25em solid #dfe2e5; padding: 0 1em; margin: 0 0 10px 0; }
     """
-
     try:
         import markdown2
         html_body = markdown2.markdown(
@@ -67,8 +67,6 @@ def _md_to_html(md: str) -> str:
             extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"],
         )
     except Exception:
-        # 无 markdown2 时使用保底渲染
-        import re
         html_body = md
         html_body = re.sub(r"^#{1,3} (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
         html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
@@ -91,7 +89,6 @@ def _email_state_file(config: Config) -> Path:
 
 def _build_email_fingerprint(content: str, subject: str, sender: str, receivers: List[str]) -> str:
     normalized_content = content.strip().replace("\r\n", "\n")
-    # 归一化报告中的动态时间字段，避免“内容未变但时间不同”导致重复发送
     normalized_content = re.sub(
         r"报告生成时间：\d{2}:\d{2}(?::\d{2})?",
         "报告生成时间：<TIME>",
@@ -102,7 +99,6 @@ def _build_email_fingerprint(content: str, subject: str, sender: str, receivers:
         "**更新**：<TIME>",
         normalized_content,
     )
-
     payload = {
         "subject": subject.strip(),
         "sender": sender.strip().lower(),
@@ -134,8 +130,18 @@ def _save_email_state(state_file: Path, fingerprint: str) -> None:
 # Telegram
 # ---------------------------------------------------------------------------
 
+def _md_to_telegram_html(md: str) -> str:
+    """将 Markdown 转换为 Telegram HTML（避免特殊字符报错）"""
+    text = _html.escape(md)             # 先转义 < > &
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
+    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    text = re.sub(r"^#{1,3} (.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    return text
+
+
 def send_telegram(content: str, config: Config) -> bool:
-    """发送 Telegram 消息（自动分割长消息）"""
+    """发送 Telegram 消息（HTML 模式，自动分割长消息，避免 Markdown 特殊字符崩溃）"""
     if not config.has_telegram():
         return False
 
@@ -144,19 +150,20 @@ def send_telegram(content: str, config: Config) -> bool:
         from telegram import Bot
         from telegram.constants import ParseMode
 
+        html_content = _md_to_telegram_html(content)
+
         async def _send():
             bot = Bot(token=config.telegram_bot_token)
-            parts = split_message(content, max_len=4000)
+            parts = split_message(html_content, max_len=4000)
             for i, part in enumerate(parts):
                 try:
                     await bot.send_message(
                         chat_id=config.telegram_chat_id,
                         text=part,
-                        parse_mode=ParseMode.MARKDOWN,
+                        parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True,
                     )
                 except Exception:
-                    # Markdown 解析失败，降级为纯文本
                     await bot.send_message(
                         chat_id=config.telegram_chat_id,
                         text=part,
@@ -167,7 +174,7 @@ def send_telegram(content: str, config: Config) -> bool:
                     await _a.sleep(1)
 
         asyncio.run(_send())
-        logger.info(f"✅ Telegram 发送成功")
+        logger.info("✅ Telegram 发送成功")
         return True
 
     except Exception as e:
@@ -237,6 +244,65 @@ def send_email(content: str, config: Config, subject: Optional[str] = None) -> b
 
 
 # ---------------------------------------------------------------------------
+# PushPlus（微信推送，无需申请 Bot）
+# ---------------------------------------------------------------------------
+
+def send_pushplus(content: str, config: Config) -> bool:
+    """PushPlus 微信公众号推送（免 Bot 申请，个人微信直推）"""
+    if not config.pushplus_token:
+        return False
+    import requests
+    from datetime import datetime, timezone, timedelta
+    date_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    try:
+        resp = requests.post(
+            "https://www.pushplus.plus/send",
+            json={
+                "token": config.pushplus_token,
+                "title": f"📊 基金每日分析报告 {date_str}",
+                "content": content,
+                "template": "markdown",
+            },
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get("code") == 200:
+            logger.info("✅ PushPlus 发送成功")
+            return True
+        logger.error(f"❌ PushPlus 失败: {data}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ PushPlus 异常: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 企业微信 WeCom Webhook
+# ---------------------------------------------------------------------------
+
+def send_wecom(content: str, config: Config) -> bool:
+    """企业微信机器人 Webhook 推送（支持 Markdown）"""
+    if not config.wecom_webhook:
+        return False
+    import requests
+    try:
+        resp = requests.post(
+            config.wecom_webhook,
+            json={"msgtype": "markdown", "markdown": {"content": content[:4096]}},
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get("errcode") == 0:
+            logger.info("✅ 企业微信发送成功")
+            return True
+        logger.error(f"❌ 企业微信失败: {data}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ 企业微信异常: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # 统一入口
 # ---------------------------------------------------------------------------
 
@@ -245,7 +311,7 @@ def send_report(content: str, config: Config) -> dict:
     同时尝试所有已配置的通知渠道
 
     Returns:
-        {"telegram": bool, "email": bool}
+        {"telegram": bool, "email": bool, "pushplus": bool, "wecom": bool}
     """
     results = {}
 
@@ -258,6 +324,16 @@ def send_report(content: str, config: Config) -> dict:
         results["email"] = send_email(content, config)
     else:
         logger.info("邮件未配置，跳过")
+
+    if config.pushplus_token:
+        results["pushplus"] = send_pushplus(content, config)
+    else:
+        logger.info("PushPlus 未配置，跳过")
+
+    if config.wecom_webhook:
+        results["wecom"] = send_wecom(content, config)
+    else:
+        logger.info("企业微信未配置，跳过")
 
     if not results:
         logger.warning("⚠️  未配置任何通知渠道，报告仅输出到控制台")

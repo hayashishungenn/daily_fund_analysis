@@ -47,6 +47,12 @@ class Config:
     email_dedup_enabled: bool = True
     email_dedup_window_minutes: int = 180
 
+    # PushPlus（微信推送）
+    pushplus_token: Optional[str] = None
+
+    # 企业微信 Webhook
+    wecom_webhook: Optional[str] = None
+
     # 系统
     log_dir: str = "./logs"
     log_level: str = "INFO"
@@ -108,6 +114,9 @@ def get_config() -> Config:
         email_sender_name=os.getenv("EMAIL_SENDER_NAME", "基金每日分析助手"),
         email_dedup_enabled=os.getenv("EMAIL_DEDUP_ENABLED", "true").lower() == "true",
         email_dedup_window_minutes=int(os.getenv("EMAIL_DEDUP_WINDOW_MINUTES", "180")),
+
+        pushplus_token=os.getenv("PUSHPLUS_TOKEN") or None,
+        wecom_webhook=os.getenv("WECOM_WEBHOOK") or None,
 
         log_dir=os.getenv("LOG_DIR", "./logs"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),

@@ -65,7 +65,21 @@ def _calc_signal_score(data: FundAnalysisData, analysis: dict) -> int:
     elif hist.max_drawdown_pct <= -10:
         score -= 8
 
-    score += {"加仓": 8, "持有": 2, "观望": -3, "减仓": -8}.get(advice, 0)
+    # AI 建议权重提升至 ±15（原为 ±8）
+    score += {"加仓": 15, "持有": 3, "观望": -5, "减仓": -15}.get(advice, 0)
+
+    # 晨星高评级加分
+    ms = info.rating_morningstar
+    if "5" in ms or "五" in ms:
+        score += 5
+    elif "4" in ms or "四" in ms:
+        score += 2
+
+    # 同类排名前20%加分
+    if 0 < info.rank_percentile <= 20:
+        score += 5
+    elif info.rank_percentile > 80:
+        score -= 5
 
     if info.name == "未知" or info.latest_nav <= 0:
         score -= 10
@@ -125,8 +139,28 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
 
     trend_icon = _TREND_EMOJI.get(hist.trend_signal, "➡️")
     advice_icon = _ADVICE_EMOJI.get(advice, "⚪")
-
     ma_text = f"MA5 {_fmt_ma(hist.ma5)} | MA10 {_fmt_ma(hist.ma10)} | MA20 {_fmt_ma(hist.ma20)}"
+
+    # 经理信息行
+    mgr_text = info.manager
+    if info.manager_years > 0:
+        mgr_text += f"（从业 {info.manager_years:.1f}年"
+        if info.manager_best_return != 0:
+            mgr_text += f"，最佳回报 {info.manager_best_return:+.1f}%"
+        mgr_text += "）"
+
+    # 评级行
+    rating_parts = []
+    if info.rating_morningstar:
+        rating_parts.append(f"晨星 {info.rating_morningstar}")
+    if info.rating_zhaos:
+        rating_parts.append(f"招商 {info.rating_zhaos}")
+    rating_text = "  |  ".join(rating_parts) if rating_parts else ""
+
+    # 同类排名
+    rank_text = ""
+    if info.rank_total > 0:
+        rank_text = f"同类排名 {info.rank_in_category}/{info.rank_total}（Top {info.rank_percentile:.0f}%）"
 
     lines = [
         f"### {advice_icon} {info.name} ({info.code})",
@@ -136,9 +170,15 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
             f"**风险：{_RISK_EMOJI.get(risk_level, risk_level)}** | "
             f"**趋势：{trend_icon} {hist.trend_signal}**"
         ),
-        f"",
+        "",
         f"- 净值：**{info.latest_nav:.4f}** ({_fmt_pct(info.nav_change_pct)}) | 更新：{info.latest_date or 'N/A'}",
-        f"- 类型：{info.fund_type} | 经理：{info.manager}",
+        f"- 类型：{info.fund_type} | 经理：{mgr_text}",
+    ]
+    if rating_text:
+        lines.append(f"- 评级：{rating_text}")
+    if rank_text:
+        lines.append(f"- {rank_text}")
+    lines += [
         f"- 收益：近7日 {_fmt_pct(hist.ret_7d)} | 近30日 {_fmt_pct(hist.ret_30d)} | 近90日 {_fmt_pct(hist.ret_90d)}",
         f"- 最大回撤：{hist.max_drawdown_pct:.2f}% | {ma_text}",
     ]
@@ -219,8 +259,31 @@ def _generate_full_report(
         "",
         f"> 共分析 **{len(results)}** 只基金 | 回看周期：{report_days} 天 | 报告生成时间：{time_str}",
         "",
-        "---",
-        "",
+    ]
+
+    # 大盘背景区块（有数据才显示）
+    if results and results[0][0].market and results[0][0].market.sh_close:
+        m = results[0][0].market
+        def _idx(v, c): return f"{c:.2f}（{v:+.2f}%）"
+        header += [
+            "## 🌐 大盘背景",
+            "",
+            f"| 指数 | 最新 | 涨跌 |",
+            f"|------|------|------|",
+        ]
+        if m.sh_close:
+            header.append(f"| 🇨🇳 上证指数 | {m.sh_close:.2f} | {m.sh_change:+.2f}% |")
+        if m.hs_close:
+            header.append(f"| 🇭🇰 恒生指数 | {m.hs_close:.2f} | {m.hs_change:+.2f}% |")
+        if m.ndx_close:
+            header.append(f"| 🇺🇸 纳斯达克 | {m.ndx_close:.2f} | {m.ndx_change:+.2f}% |")
+        if m.cny_usd:
+            header.append(f"| 💱 人民币/美元 | {m.cny_usd:.4f} | — |")
+        header += ["", "---", ""]
+    else:
+        header += ["---", ""]
+
+    header += [
         "## 📊 操作建议汇总",
         "",
         "| 指标 | 数值 |",
