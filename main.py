@@ -97,7 +97,19 @@ def run_analysis(
     # === 1. 数据获取（并发） ===
     data_by_code = {}
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
-        futures = {pool.submit(fetch_fund_data, code, config.report_days): code for code in fund_codes}
+        futures = {
+            pool.submit(
+                fetch_fund_data,
+                code=code,
+                report_days=config.report_days,
+                market=None,
+                backtest_enabled=config.backtest_enabled,
+                backtest_forward_points=config.backtest_forward_points,
+                backtest_min_train_points=config.backtest_min_train_points,
+                backtest_neutral_band_pct=config.backtest_neutral_band_pct,
+            ): code
+            for code in fund_codes
+        }
         for future in as_completed(futures):
             code = futures[future]
             try:

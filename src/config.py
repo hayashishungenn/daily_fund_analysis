@@ -26,6 +26,12 @@ class Config:
     report_days: int = 30
     report_type: str = "full"  # simple / full
 
+    # Rolling signal backtest
+    backtest_enabled: bool = True
+    backtest_forward_points: int = 10
+    backtest_min_train_points: int = 60
+    backtest_neutral_band_pct: float = 1.5
+
     # AI 配置
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-2.0-flash"
@@ -85,6 +91,10 @@ class Config:
             warnings.append("⚠️  未配置 AI API Key（GEMINI_API_KEY / OPENAI_API_KEY），将使用规则引擎生成建议")
         if not self.has_notification():
             warnings.append("⚠️  未配置任何通知渠道，报告仅输出到控制台")
+        if self.backtest_forward_points < 3:
+            warnings.append("⚠️  BACKTEST_FORWARD_POINTS 过小，建议 >= 3")
+        if self.backtest_min_train_points < 20:
+            warnings.append("⚠️  BACKTEST_MIN_TRAIN_POINTS 过小，建议 >= 20")
         return warnings
 
 
@@ -96,6 +106,10 @@ def get_config() -> Config:
         fund_list=_split_list(fund_list_raw),
         report_days=int(os.getenv("REPORT_DAYS", "30")),
         report_type=(os.getenv("REPORT_TYPE", "full") or "full").strip().lower(),
+        backtest_enabled=os.getenv("BACKTEST_ENABLED", "true").lower() == "true",
+        backtest_forward_points=max(3, int(os.getenv("BACKTEST_FORWARD_POINTS", "10"))),
+        backtest_min_train_points=max(20, int(os.getenv("BACKTEST_MIN_TRAIN_POINTS", "60"))),
+        backtest_neutral_band_pct=max(0.5, float(os.getenv("BACKTEST_NEUTRAL_BAND_PCT", "1.5"))),
 
         gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),

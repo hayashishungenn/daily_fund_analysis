@@ -5,9 +5,10 @@
 - 报告结构参考: https://github.com/hayashishungenn/daily_stock_analysis
 """
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from src.fund_data import FundAnalysisData
 
@@ -43,12 +44,29 @@ def _fmt_ma(v) -> str:
     return f"{v:.4f}"
 
 
+def _fmt_value(v: Any, digits: int = 2, default: str = "N/A") -> str:
+    if v is None:
+        return default
+    try:
+        return f"{float(v):.{digits}f}"
+    except Exception:
+        return default
+
+
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
 def _calc_signal_score(data: FundAnalysisData, analysis: dict) -> int:
     """计算 0-100 信号分，用于排序和快速总览"""
+    ai_score = analysis.get("score")
+    if ai_score is not None:
+        if isinstance(ai_score, (int, float)):
+            return int(round(_clamp(float(ai_score), 0, 100)))
+        m = re.search(r"-?\d+", str(ai_score))
+        if m:
+            return int(round(_clamp(float(m.group()), 0, 100)))
+
     hist = data.history
     info = data.info
     advice = analysis.get("advice", "观望")
@@ -106,6 +124,15 @@ def _risk_level(data: FundAnalysisData) -> str:
     if hist.trend_signal == "空头排列":
         risk_points += 1
 
+    if hist.volatility_30d >= 35:
+        risk_points += 1
+    if hist.downside_volatility_30d >= 20:
+        risk_points += 1
+    if hist.backtest_samples >= 20 and hist.backtest_direction_accuracy_pct <= 45:
+        risk_points += 1
+    if hist.backtest_recent_consistency == "走弱":
+        risk_points += 1
+
     if info.name == "未知" or info.latest_nav <= 0:
         risk_points += 1
 
@@ -126,7 +153,18 @@ def _data_quality_issues(data: FundAnalysisData) -> List[str]:
         issues.append("净值日期")
     if len(data.history.navs) < 5:
         issues.append("历史净值")
+    if not data.top_stock_holdings and not data.top_bond_holdings and not data.top_fund_holdings:
+        issues.append("持仓披露")
     return issues
+
+
+def _append_holdings(lines: List[str], title: str, holdings: List[dict], limit: int = 3) -> None:
+    if not holdings:
+        lines.append(f"- {title}：暂无披露")
+        return
+    lines.append(f"- {title}（Top{min(limit, len(holdings))}）：")
+    for i, h in enumerate(holdings[:limit], 1):
+        lines.append(f"  - {i}. {h.get('name', '未知')}({h.get('code', '')}) {float(h.get('ratio', 0.0)):.1f}%")
 
 
 def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int, risk_level: str) -> str:
@@ -134,12 +172,17 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
     info = data.info
     hist = data.history
     advice = analysis.get("advice", "观望")
+    confidence = analysis.get("confidence", "中")
+    portfolio_review = analysis.get("portfolio_review", "")
+    backtest_review = analysis.get("backtest_review", "")
+    factors = analysis.get("factors", []) or []
+    risk_items = analysis.get("risk_items", []) or []
     reason = analysis.get("reason", "")
     risk = analysis.get("risk", "")
 
     trend_icon = _TREND_EMOJI.get(hist.trend_signal, "➡️")
     advice_icon = _ADVICE_EMOJI.get(advice, "⚪")
-    ma_text = f"MA5 {_fmt_ma(hist.ma5)} | MA10 {_fmt_ma(hist.ma10)} | MA20 {_fmt_ma(hist.ma20)}"
+    ma_text = f"MA5 {_fmt_ma(hist.ma5)} | MA10 {_fmt_ma(hist.ma10)} | MA20 {_fmt_ma(hist.ma20)} | MA60 {_fmt_ma(hist.ma60)}"
 
     # 经理信息行
     mgr_text = info.manager
@@ -167,6 +210,7 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
         "",
         (
             f"**操作建议：{advice}** | **信号分：{signal_score}/100** | "
+            f"**置信度：{confidence}** | "
             f"**风险：{_RISK_EMOJI.get(risk_level, risk_level)}** | "
             f"**趋势：{trend_icon} {hist.trend_signal}**"
         ),
@@ -181,13 +225,42 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
     lines += [
         f"- 收益：近7日 {_fmt_pct(hist.ret_7d)} | 近30日 {_fmt_pct(hist.ret_30d)} | 近90日 {_fmt_pct(hist.ret_90d)}",
         f"- 最大回撤：{hist.max_drawdown_pct:.2f}% | {ma_text}",
+        (
+            f"- 深度指标：趋势强度 {hist.trend_strength}/100 | 波动 {hist.volatility_30d:.2f}% | "
+            f"下行波动 {hist.downside_volatility_30d:.2f}% | 夏普 {hist.sharpe_30d:.2f}"
+        ),
+        (
+            f"- 动量与择时：10点动量 {_fmt_pct(hist.momentum_10d)} | RSI14 {_fmt_value(hist.rsi14, 1)} | "
+            f"MACD(DIF/DEA/HIST) {_fmt_value(hist.macd_dif, 4)}/{_fmt_value(hist.macd_dea, 4)}/{_fmt_value(hist.macd_hist, 4)}"
+        ),
+        (
+            f"- 回测验证：样本 {hist.backtest_samples} | 方向准确率 {_fmt_value(hist.backtest_direction_accuracy_pct, 1)}% | "
+            f"看多胜率 {_fmt_value(hist.backtest_bullish_win_rate_pct, 1)}% | "
+            f"看空胜率 {_fmt_value(hist.backtest_bearish_win_rate_pct, 1)}% | "
+            f"平均前瞻收益 {_fmt_value(hist.backtest_avg_forward_return_pct, 2)}% | "
+            f"近期一致性 {hist.backtest_recent_consistency}"
+        ),
+        (
+            f"- 资产暴露（前十大披露）：股票 {data.stock_exposure_pct:.1f}% | 债券 {data.bond_exposure_pct:.1f}% | "
+            f"基金 {data.fund_exposure_pct:.1f}% | 其他 {data.other_exposure_pct:.1f}%"
+        ),
     ]
 
-    if data.top_holdings:
-        lines.append("")
-        lines.append("**前五大持仓**")
-        for i, h in enumerate(data.top_holdings[:5]):
-            lines.append(f"- {i + 1}. {h['name']}({h['code']}) {h['ratio']:.1f}%")
+    lines.append("")
+    lines.append("**三类持仓审查（股票 / 债券 / 基金）**")
+    _append_holdings(lines, "股票持仓", data.top_stock_holdings, limit=3)
+    _append_holdings(lines, "债券持仓", data.top_bond_holdings, limit=3)
+    _append_holdings(lines, "基金持仓", data.top_fund_holdings, limit=3)
+
+    lines += [
+        "",
+        f"- 持仓结论：{portfolio_review or '持仓结构无异常结论'}",
+        f"- 回测结论：{backtest_review or '回测结论暂不可用'}",
+    ]
+    if factors:
+        lines.append(f"- 正向因子：{'；'.join(factors[:3])}")
+    if risk_items:
+        lines.append(f"- 关键风险：{'；'.join(risk_items[:3])}")
 
     lines += [
         "",
