@@ -5,7 +5,6 @@
 import os
 from dataclasses import dataclass, field
 from typing import List, Optional
-from pathlib import Path
 
 try:
     from dotenv import load_dotenv
@@ -62,7 +61,11 @@ class Config:
     # 系统
     log_dir: str = "./logs"
     log_level: str = "INFO"
-    max_workers: int = 1
+    max_workers: int = 3
+    data_source_connect_timeout: float = 3.0
+    data_source_read_timeout: float = 8.0
+    data_source_max_retries: int = 0
+    data_source_retry_backoff: float = 0.0
     use_proxy: bool = False
     proxy_host: str = "127.0.0.1"
     proxy_port: int = 10809
@@ -95,6 +98,12 @@ class Config:
             warnings.append("⚠️  BACKTEST_FORWARD_POINTS 过小，建议 >= 3")
         if self.backtest_min_train_points < 20:
             warnings.append("⚠️  BACKTEST_MIN_TRAIN_POINTS 过小，建议 >= 20")
+        if self.max_workers < 1:
+            warnings.append("⚠️  MAX_WORKERS 过小，已自动提升为 1")
+        if self.data_source_connect_timeout <= 0 or self.data_source_read_timeout <= 0:
+            warnings.append("⚠️  数据源超时配置非法，已自动回退为默认值")
+        if self.data_source_max_retries < 0:
+            warnings.append("⚠️  DATA_SOURCE_MAX_RETRIES 不能为负数，已自动回退为 0")
         return warnings
 
 
@@ -134,7 +143,19 @@ def get_config() -> Config:
 
         log_dir=os.getenv("LOG_DIR", "./logs"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
-        max_workers=int(os.getenv("MAX_WORKERS", "1")),
+        max_workers=max(1, int(os.getenv("MAX_WORKERS", "3"))),
+        data_source_connect_timeout=max(
+            0.1, float(os.getenv("DATA_SOURCE_CONNECT_TIMEOUT", "3.0"))
+        ),
+        data_source_read_timeout=max(
+            0.1, float(os.getenv("DATA_SOURCE_READ_TIMEOUT", "8.0"))
+        ),
+        data_source_max_retries=max(
+            0, int(os.getenv("DATA_SOURCE_MAX_RETRIES", "0"))
+        ),
+        data_source_retry_backoff=max(
+            0.0, float(os.getenv("DATA_SOURCE_RETRY_BACKOFF", "0.0"))
+        ),
         use_proxy=os.getenv("USE_PROXY", "false").lower() == "true",
         proxy_host=os.getenv("PROXY_HOST", "127.0.0.1"),
         proxy_port=int(os.getenv("PROXY_PORT", "10809")),

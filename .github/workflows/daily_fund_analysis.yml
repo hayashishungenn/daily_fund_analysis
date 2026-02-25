@@ -91,6 +91,11 @@ jobs:
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || '3' }}
+          DATA_SOURCE_CONNECT_TIMEOUT: ${{ vars.DATA_SOURCE_CONNECT_TIMEOUT || '3.0' }}
+          DATA_SOURCE_READ_TIMEOUT: ${{ vars.DATA_SOURCE_READ_TIMEOUT || '8.0' }}
+          DATA_SOURCE_MAX_RETRIES: ${{ vars.DATA_SOURCE_MAX_RETRIES || '0' }}
+          DATA_SOURCE_RETRY_BACKOFF: ${{ vars.DATA_SOURCE_RETRY_BACKOFF || '0.0' }}
 
         run: |
           MODE="${{ github.event.inputs.mode || 'full' }}"

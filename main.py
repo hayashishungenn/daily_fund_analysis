@@ -35,6 +35,7 @@ from typing import List, Optional
 from src.config import get_config
 from src.logging_config import setup_logging
 from src.fund_data import fetch_fund_data, fetch_market_context, FundAnalysisData, FundInfo, FundHistory
+from src.http_fastfail import install_requests_fast_fail
 from src.analyzer import analyze_fund
 from src.report import generate_report, save_report
 from src.notification import send_report
@@ -207,6 +208,14 @@ def main() -> int:
     for w in config.validate():
         logger.warning(w)
 
+    # 给数据源请求加短超时 + 快失败策略（覆盖 AkShare 底层 requests）
+    install_requests_fast_fail(
+        connect_timeout=config.data_source_connect_timeout,
+        read_timeout=config.data_source_read_timeout,
+        max_retries=config.data_source_max_retries,
+        retry_backoff=config.data_source_retry_backoff,
+    )
+
     # 解析基金列表
     if args.funds:
         fund_codes = [c.strip() for c in args.funds.split(",") if c.strip()]
@@ -254,4 +263,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
