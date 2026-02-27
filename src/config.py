@@ -23,7 +23,8 @@ class Config:
     # 自选基金列表
     fund_list: List[str] = field(default_factory=list)
     report_days: int = 30
-    report_type: str = "full"  # simple / full
+    report_type: str = "full"  # simple / full / summary
+    report_summary_only: bool = False
 
     # Rolling signal backtest
     backtest_enabled: bool = True
@@ -62,6 +63,9 @@ class Config:
     log_dir: str = "./logs"
     log_level: str = "INFO"
     max_workers: int = 3
+    schedule_time: str = "14:00"
+    run_immediately: bool = True
+    cn_workday_only: bool = True
     data_source_connect_timeout: float = 3.0
     data_source_read_timeout: float = 8.0
     data_source_max_retries: int = 0
@@ -86,9 +90,9 @@ class Config:
         warnings = []
         if not self.fund_list:
             warnings.append("⚠️  FUND_LIST 未配置，将使用默认示例基金")
-        if self.report_type not in ("simple", "full"):
+        if self.report_type not in ("simple", "full", "summary"):
             warnings.append(
-                f"⚠️  REPORT_TYPE={self.report_type} 非法，将自动回退为 full（可选: simple/full）"
+                f"⚠️  REPORT_TYPE={self.report_type} 非法，将自动回退为 full（可选: simple/full/summary）"
             )
         if not self.has_ai():
             warnings.append("⚠️  未配置 AI API Key（GEMINI_API_KEY / OPENAI_API_KEY），将使用规则引擎生成建议")
@@ -115,6 +119,7 @@ def get_config() -> Config:
         fund_list=_split_list(fund_list_raw),
         report_days=int(os.getenv("REPORT_DAYS", "30")),
         report_type=(os.getenv("REPORT_TYPE", "full") or "full").strip().lower(),
+        report_summary_only=os.getenv("REPORT_SUMMARY_ONLY", "false").lower() == "true",
         backtest_enabled=os.getenv("BACKTEST_ENABLED", "true").lower() == "true",
         backtest_forward_points=max(3, int(os.getenv("BACKTEST_FORWARD_POINTS", "10"))),
         backtest_min_train_points=max(20, int(os.getenv("BACKTEST_MIN_TRAIN_POINTS", "60"))),
@@ -144,6 +149,9 @@ def get_config() -> Config:
         log_dir=os.getenv("LOG_DIR", "./logs"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         max_workers=max(1, int(os.getenv("MAX_WORKERS", "3"))),
+        schedule_time=(os.getenv("SCHEDULE_TIME", "14:00") or "14:00").strip(),
+        run_immediately=os.getenv("RUN_IMMEDIATELY", "true").lower() == "true",
+        cn_workday_only=os.getenv("CN_WORKDAY_ONLY", "true").lower() == "true",
         data_source_connect_timeout=max(
             0.1, float(os.getenv("DATA_SOURCE_CONNECT_TIMEOUT", "3.0"))
         ),

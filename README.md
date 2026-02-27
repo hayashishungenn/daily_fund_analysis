@@ -1,6 +1,6 @@
 # 国内基金每日分析系统（小白教程版）
 
-每天自动分析你的基金清单，生成两种风格报告，并推送到：
+每天自动分析你的基金清单，生成三种风格报告，并推送到：
 
 - Telegram Bot
 - 邮件（QQ/163/Gmail/Outlook 等 SMTP）
@@ -8,6 +8,7 @@
 这是一个**基金每日分析报告**项目，报告结构参考  
 [hayashishungenn/daily_stock_analysis](https://github.com/hayashishungenn/daily_stock_analysis)，支持：
 
+- `summary`：仅汇总（只看组合全局，不看逐只详情）
 - `simple`：精简快读（适合手机快速浏览）
 - `full`：完整仪表盘（适合邮件/复盘）
 
@@ -31,7 +32,7 @@
 - [3. 安装项目](#3-安装项目)
 - [4. 配置 .env（逐项解释）](#4-配置-env逐项解释)
 - [5. 运行项目（本地）](#5-运行项目本地)
-- [6. 两种报告格式（simple / full）](#6-两种报告格式simple--full)
+- [6. 三种报告格式（summary / simple / full）](#6-三种报告格式summary--simple--full)
 - [7. Telegram 配置教程](#7-telegram-配置教程)
 - [8. 邮箱配置教程](#8-邮箱配置教程)
 - [9. GitHub Actions 自动运行（可选）](#9-github-actions-自动运行可选)
@@ -134,6 +135,7 @@ copy .env.example .env
 FUND_LIST=110022,003095,100032
 REPORT_DAYS=30
 REPORT_TYPE=full
+REPORT_SUMMARY_ONLY=false
 ```
 
 说明：
@@ -141,8 +143,12 @@ REPORT_TYPE=full
 - `FUND_LIST`：你的基金代码，逗号分隔
 - `REPORT_DAYS`：回看天数
 - `REPORT_TYPE`：
+  - `summary` = 仅汇总
   - `simple` = 精简版
   - `full` = 完整版（默认，推荐）
+- `REPORT_SUMMARY_ONLY`：
+  - `true` = 强制仅汇总（优先级高于 `REPORT_TYPE`）
+  - `false` = 按 `REPORT_TYPE` 输出
 
 ### AI 配置（可选，但推荐）
 
@@ -181,6 +187,9 @@ EMAIL_DEDUP_WINDOW_MINUTES=180
 
 ```env
 MAX_WORKERS=3
+SCHEDULE_TIME=14:00
+RUN_IMMEDIATELY=true
+CN_WORKDAY_ONLY=true
 DATA_SOURCE_CONNECT_TIMEOUT=3.0
 DATA_SOURCE_READ_TIMEOUT=8.0
 DATA_SOURCE_MAX_RETRIES=0
@@ -188,6 +197,12 @@ DATA_SOURCE_RETRY_BACKOFF=0.0
 LOG_LEVEL=INFO
 USE_PROXY=false
 ```
+
+说明：
+
+- `SCHEDULE_TIME=14:00`：定时模式默认在北京时间 14:00 触发
+- `RUN_IMMEDIATELY=true`：定时模式启动后立即先跑一次
+- `CN_WORKDAY_ONLY=true`：仅在中国大陆法定工作日执行（含调休）
 
 ---
 
@@ -214,13 +229,47 @@ USE_PROXY=false
 ### 5.4 指定报告格式
 
 ```powershell
+.\.venv\Scripts\python.exe main.py --report-type summary
 .\.venv\Scripts\python.exe main.py --report-type simple
 .\.venv\Scripts\python.exe main.py --report-type full
 ```
 
+### 5.5 定时运行（北京时间 14:00）
+
+```powershell
+.\.venv\Scripts\python.exe main.py --schedule
+```
+
+如需在非法定工作日强制执行：
+
+```powershell
+.\.venv\Scripts\python.exe main.py --force-run
+```
+
 ---
 
-## 6. 两种报告格式（simple / full）
+## 6. 三种报告格式（summary / simple / full）
+
+### summary（仅汇总）
+
+适合基金数量多、只看组合全局时：
+
+- 建议汇总
+- Top 关注清单
+- 风险预警
+- 汇总清单（按信号分）
+
+启用方式：
+
+```env
+REPORT_TYPE=summary
+```
+
+或
+
+```env
+REPORT_SUMMARY_ONLY=true
+```
 
 ### simple（精简快读）
 
@@ -290,6 +339,11 @@ REPORT_TYPE=full
 
 如果你不想每天手动运行，可以用 GitHub Actions。
 
+默认已配置为：
+
+- 每天北京时间 **14:00** 触发（UTC 06:00）
+- 仅在**中国大陆法定工作日**执行分析（含调休）
+
 ### 9.1 配置 Secrets
 
 仓库 -> `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`
@@ -310,6 +364,8 @@ REPORT_TYPE=full
 - `FUND_LIST`
 - `REPORT_DAYS`
 - `REPORT_TYPE`
+- `REPORT_SUMMARY_ONLY`
+- `CN_WORKDAY_ONLY`
 
 ### 9.3 手动触发
 
@@ -371,7 +427,8 @@ daily_fund_analysis/
 │   ├── analyzer.py
 │   ├── report.py
 │   ├── notification.py
-│   └── scheduler.py
+│   ├── scheduler.py
+│   └── workday.py
 ├── main.py
 ├── .env.example
 ├── requirements.txt

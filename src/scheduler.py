@@ -16,7 +16,7 @@ TZ_CN = timezone(timedelta(hours=8))
 
 def run_with_schedule(
     task: Callable,
-    schedule_time: str = "15:35",
+    schedule_time: str = "14:00",
     run_immediately: bool = True,
 ) -> None:
     """
@@ -29,8 +29,7 @@ def run_with_schedule(
     """
     logger.info(f"定时任务模式启动，每日 {schedule_time}（北京时间）执行")
 
-    # 将北京时间转换为本地 schedule 时间
-    # schedule 库使用本地时间；在 GitHub Actions(UTC) 上需换算
+    # 任务内部可自行判断“是否法定工作日”，调度层只负责按时触发。
     schedule.every().day.at(schedule_time).do(task)
 
     if run_immediately:

@@ -14,6 +14,7 @@ markdown2>=2.4.0
 
 # 调度
 schedule>=1.2.0
+chinese-calendar>=1.10.0
 
 # 工具
 python-dotenv>=1.0.0

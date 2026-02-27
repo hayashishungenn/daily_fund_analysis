@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 报告生成模块
-- 生成 Markdown 格式的基金每日分析报告（simple / full）
+- 生成 Markdown 格式的基金每日分析报告（summary / simple / full）
 - 报告结构参考: https://github.com/hayashishungenn/daily_stock_analysis
 """
 import logging
@@ -559,24 +559,114 @@ def _generate_simple_report(
     return "\n".join(lines)
 
 
+def _generate_summary_report(
+    results: List[Tuple[FundAnalysisData, dict]],
+    report_days: int,
+    now: datetime,
+) -> str:
+    """生成仅汇总报告（summary 模式，不含逐只基金详情）"""
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+
+    ctx = _prepare_report_context(results)
+    advice_count = ctx["advice_count"]
+    avg_ret30 = ctx["avg_ret30"]
+    ranked = ctx["ranked"]
+    high_risk = ctx["high_risk"]
+
+    top_focus = ranked[:5]
+    risk_focus = sorted(high_risk, key=lambda x: x["signal_score"])[:5]
+
+    lines = [
+        f"# 📅 {date_str} 基金分析汇总",
+        "",
+        f"> 模式：**summary** | 共分析 **{len(results)}** 只基金 | 回看周期：{report_days} 天 | 生成时间：{time_str}",
+        "",
+        "## 📊 建议总览",
+        "",
+        "| 指标 | 数值 |",
+        "|------|------|",
+        f"| 🟢 加仓 | **{advice_count.get('加仓', 0)}** 只 |",
+        f"| 🔵 持有 | **{advice_count.get('持有', 0)}** 只 |",
+        f"| 🔴 减仓 | **{advice_count.get('减仓', 0)}** 只 |",
+        f"| 🟡 观望 | **{advice_count.get('观望', 0)}** 只 |",
+        f"| 📈 平均近30日收益 | **{avg_ret30:+.2f}%** |",
+        "",
+        "## 🎯 优先关注（Top 5）",
+        "",
+    ]
+
+    if top_focus:
+        for x in top_focus:
+            d = x["data"]
+            lines.append(
+                f"- {_ADVICE_EMOJI.get(x['advice'], '⚪')} {d.info.name} ({d.info.code}) | "
+                f"信号分 {x['signal_score']} | 近30日 {_fmt_pct(d.history.ret_30d)}"
+            )
+    else:
+        lines.append("- 今日暂无可用数据。")
+
+    lines += [
+        "",
+        "## ⚠️ 风险预警（Top 5）",
+        "",
+    ]
+
+    if risk_focus:
+        for x in risk_focus:
+            d = x["data"]
+            lines.append(
+                f"- {_RISK_EMOJI.get(x['risk_level'], x['risk_level'])} {d.info.name} ({d.info.code}) | "
+                f"最大回撤 {d.history.max_drawdown_pct:.2f}% | 近30日 {_fmt_pct(d.history.ret_30d)}"
+            )
+    else:
+        lines.append("- 今日无高风险基金。")
+
+    lines += [
+        "",
+        "## 🧾 汇总清单（按信号分）",
+        "",
+        "| 基金 | 建议 | 信号分 | 风险 | 近30日 | 趋势 |",
+        "|------|------|--------|------|--------|------|",
+    ]
+
+    for x in ranked:
+        d = x["data"]
+        advice_text = f"{_ADVICE_EMOJI.get(x['advice'], '⚪')}{x['advice']}"
+        risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
+        lines.append(
+            f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | "
+            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {d.history.trend_signal} |"
+        )
+
+    lines += [
+        "",
+        "> ⚠️ 本汇总仅供参考，不构成投资建议。",
+        "> 报告结构参考：https://github.com/hayashishungenn/daily_stock_analysis",
+    ]
+    return "\n".join(lines)
+
+
 def generate_report(
     results: List[Tuple[FundAnalysisData, dict]],
     report_days: int = 30,
     report_type: str = "full",
 ) -> str:
     """
-    生成报告（支持 simple / full 两种格式）
+    生成报告（支持 summary / simple / full 三种格式）
 
     Args:
         results: [(FundAnalysisData, analysis_dict), ...]
         report_days: 分析天数
-        report_type: 报告类型，simple / full
+        report_type: 报告类型，summary / simple / full
 
     Returns:
         Markdown 字符串
     """
     now = datetime.now(TZ_CN)
     rt = (report_type or "full").strip().lower()
+    if rt == "summary":
+        return _generate_summary_report(results, report_days, now)
     if rt == "simple":
         return _generate_simple_report(results, report_days, now)
     return _generate_full_report(results, report_days, now)
