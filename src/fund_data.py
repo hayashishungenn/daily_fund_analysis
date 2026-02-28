@@ -76,6 +76,9 @@ class FundHistory:
     ret_7d: float = 0.0              # 近7日收益率
     ret_30d: float = 0.0             # 近30日收益率
     ret_90d: float = 0.0             # 近90日收益率
+    ret_180d: float = 0.0            # 近180日收益率
+    ret_1y: float = 0.0              # 近1年收益率
+    ret_3y: float = 0.0              # 近3年收益率
     momentum_10d: float = 0.0        # 近10个净值点动量(%)
     volatility_30d: float = 0.0      # 近30个净值点年化波动率(%)
     downside_volatility_30d: float = 0.0  # 近30个净值点下行年化波动率(%)
@@ -230,6 +233,9 @@ def _calc_trend_strength(
     ma20: Optional[float],
     ret_30d: float,
     ret_90d: float,
+    ret_180d: float,
+    ret_1y: float,
+    ret_3y: float,
     max_drawdown_pct: float,
     rsi14: Optional[float],
     macd_hist: Optional[float],
@@ -249,6 +255,9 @@ def _calc_trend_strength(
 
     score += max(-15.0, min(15.0, ret_30d * 1.0))
     score += max(-10.0, min(10.0, ret_90d * 0.5))
+    score += max(-8.0, min(8.0, ret_180d * 0.18))
+    score += max(-8.0, min(8.0, ret_1y * 0.10))
+    score += max(-6.0, min(6.0, ret_3y * 0.04))
 
     if max_drawdown_pct <= -20:
         score -= 12
@@ -689,6 +698,9 @@ def fetch_fund_nav_history(
         ret_7d = _calc_return(navs, 7)
         ret_30d = _calc_return(navs, 22)    # 约22个交易日 ≈ 1个月
         ret_90d = _calc_return(navs, 65)    # 约65个交易日 ≈ 3个月
+        ret_180d = _calc_return(navs, 130)  # 约130个交易日 ≈ 6个月
+        ret_1y = _calc_return(navs, 252)    # 约252个交易日 ≈ 1年
+        ret_3y = _calc_return(navs, 756)    # 约756个交易日 ≈ 3年
         trend_signal = _trend_signal(ma5, ma10, ma20)
         trend_strength = _calc_trend_strength(
             ma5=ma5,
@@ -696,6 +708,9 @@ def fetch_fund_nav_history(
             ma20=ma20,
             ret_30d=ret_30d,
             ret_90d=ret_90d,
+            ret_180d=ret_180d,
+            ret_1y=ret_1y,
+            ret_3y=ret_3y,
             max_drawdown_pct=max_drawdown_pct,
             rsi14=rsi14,
             macd_hist=macd_hist,
@@ -731,6 +746,9 @@ def fetch_fund_nav_history(
             ret_7d=ret_7d,
             ret_30d=ret_30d,
             ret_90d=ret_90d,
+            ret_180d=ret_180d,
+            ret_1y=ret_1y,
+            ret_3y=ret_3y,
             momentum_10d=momentum_10d,
             volatility_30d=volatility_30d,
             downside_volatility_30d=downside_volatility_30d,

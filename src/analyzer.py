@@ -111,6 +111,17 @@ def _fmt_holdings(title: str, holdings: List[dict], limit: int = 5) -> str:
     return "\n".join(lines)
 
 
+def _fmt_lookback_returns(data: FundAnalysisData) -> str:
+    hist = data.history
+    return (
+        f"30天 {hist.ret_30d:+.2f}% | "
+        f"90天 {hist.ret_90d:+.2f}% | "
+        f"180天 {hist.ret_180d:+.2f}% | "
+        f"1年 {hist.ret_1y:+.2f}% | "
+        f"3年 {hist.ret_3y:+.2f}%"
+    )
+
+
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
@@ -180,6 +191,9 @@ def _multi_factor_score(data: FundAnalysisData) -> dict:
 
     score += _clamp(hist.ret_30d * 0.9, -12, 12)
     score += _clamp(hist.ret_90d * 0.5, -10, 10)
+    score += _clamp(hist.ret_180d * 0.18, -8, 8)
+    score += _clamp(hist.ret_1y * 0.10, -8, 8)
+    score += _clamp(hist.ret_3y * 0.04, -6, 6)
     score += _clamp(hist.momentum_10d * 0.5, -6, 6)
 
     trend_score_map = {"多头排列": 12, "震荡": 0, "空头排列": -12}
@@ -379,7 +393,9 @@ def _multi_factor_score(data: FundAnalysisData) -> dict:
     else:
         advice = "减仓"
 
-    hard_risk = hist.max_drawdown_pct <= -20 or (hist.trend_signal == "空头排列" and hist.ret_30d < -5)
+    hard_risk = hist.max_drawdown_pct <= -20 or (
+        hist.trend_signal == "空头排列" and (hist.ret_30d < -5 or hist.ret_90d < -10)
+    )
     if hard_risk and advice == "加仓":
         advice = "持有"
     if hard_risk and score_int < 55:
@@ -480,6 +496,9 @@ def _build_prompt(data: FundAnalysisData) -> str:
 近7日收益：{hist.ret_7d:+.2f}%
 近30日收益：{hist.ret_30d:+.2f}%
 近90日收益：{hist.ret_90d:+.2f}%
+近180日收益：{hist.ret_180d:+.2f}%
+近1年收益：{hist.ret_1y:+.2f}%
+近3年收益：{hist.ret_3y:+.2f}%
 近10点动量：{hist.momentum_10d:+.2f}%
 最大回撤：{hist.max_drawdown_pct:.2f}%
 年化波动（30点）：{hist.volatility_30d:.2f}%
@@ -511,6 +530,7 @@ MA5：{_fmt_ma(hist.ma5)}  MA10：{_fmt_ma(hist.ma10)}  MA20：{_fmt_ma(hist.ma2
 重点因子：{"；".join(baseline.get("factors", [])[:3]) if baseline.get("factors") else "无"}
 风险因子：{"；".join(baseline.get("risk_items", [])[:3]) if baseline.get("risk_items") else "无"}
 回测结论：{baseline.get("backtest_review", "无")}
+多周期回看：{_fmt_lookback_returns(data)}
 
 请严格输出以下格式（不要添加其他内容）：
 操作建议：<加仓|持有|减仓|观望>

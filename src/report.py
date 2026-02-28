@@ -53,6 +53,16 @@ def _fmt_value(v: Any, digits: int = 2, default: str = "N/A") -> str:
         return default
 
 
+def _fmt_lookback_returns(hist) -> str:
+    return (
+        f"30天 {_fmt_pct(hist.ret_30d)} | "
+        f"90天 {_fmt_pct(hist.ret_90d)} | "
+        f"180天 {_fmt_pct(hist.ret_180d)} | "
+        f"1年 {_fmt_pct(hist.ret_1y)} | "
+        f"3年 {_fmt_pct(hist.ret_3y)}"
+    )
+
+
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
@@ -74,6 +84,10 @@ def _calc_signal_score(data: FundAnalysisData, analysis: dict) -> int:
     score = 50.0
     score += {"多头排列": 12, "震荡": 0, "空头排列": -12}.get(hist.trend_signal, 0)
     score += _clamp(hist.ret_30d * 1.2, -20, 20)
+    score += _clamp(hist.ret_90d * 0.5, -10, 10)
+    score += _clamp(hist.ret_180d * 0.18, -8, 8)
+    score += _clamp(hist.ret_1y * 0.10, -8, 8)
+    score += _clamp(hist.ret_3y * 0.04, -6, 6)
     score += _clamp(hist.ret_7d * 0.8, -10, 10)
 
     if hist.max_drawdown_pct <= -30:
@@ -119,6 +133,10 @@ def _risk_level(data: FundAnalysisData) -> str:
     if hist.ret_30d < -8:
         risk_points += 2
     elif hist.ret_30d < -3:
+        risk_points += 1
+    if hist.ret_90d < -12:
+        risk_points += 1
+    if hist.ret_1y < -15:
         risk_points += 1
 
     if hist.trend_signal == "空头排列":
@@ -223,7 +241,7 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
     if rank_text:
         lines.append(f"- {rank_text}")
     lines += [
-        f"- 收益：近7日 {_fmt_pct(hist.ret_7d)} | 近30日 {_fmt_pct(hist.ret_30d)} | 近90日 {_fmt_pct(hist.ret_90d)}",
+        f"- 收益：近7日 {_fmt_pct(hist.ret_7d)} | {_fmt_lookback_returns(hist)}",
         f"- 最大回撤：{hist.max_drawdown_pct:.2f}% | {ma_text}",
         (
             f"- 深度指标：趋势强度 {hist.trend_strength}/100 | 波动 {hist.volatility_30d:.2f}% | "
@@ -277,11 +295,19 @@ def _prepare_report_context(results: List[Tuple[FundAnalysisData, dict]]) -> dic
     """预计算报告所需统计与排序信息"""
     advice_count = {k: 0 for k in _ADVICE_EMOJI.keys()}
     ret30_values = []
+    ret90_values = []
+    ret180_values = []
+    ret1y_values = []
+    ret3y_values = []
     enriched = []
     for data, analysis in results:
         adv = analysis.get("advice", "观望")
         advice_count[adv] = advice_count.get(adv, 0) + 1
         ret30_values.append(data.history.ret_30d)
+        ret90_values.append(data.history.ret_90d)
+        ret180_values.append(data.history.ret_180d)
+        ret1y_values.append(data.history.ret_1y)
+        ret3y_values.append(data.history.ret_3y)
         enriched.append(
             {
                 "data": data,
@@ -293,6 +319,10 @@ def _prepare_report_context(results: List[Tuple[FundAnalysisData, dict]]) -> dic
             }
         )
     avg_ret30 = sum(ret30_values) / len(ret30_values) if ret30_values else 0.0
+    avg_ret90 = sum(ret90_values) / len(ret90_values) if ret90_values else 0.0
+    avg_ret180 = sum(ret180_values) / len(ret180_values) if ret180_values else 0.0
+    avg_ret1y = sum(ret1y_values) / len(ret1y_values) if ret1y_values else 0.0
+    avg_ret3y = sum(ret3y_values) / len(ret3y_values) if ret3y_values else 0.0
 
     ranked = sorted(enriched, key=lambda x: x["signal_score"], reverse=True)
     high_risk = [x for x in ranked if x["risk_level"] == "高"]
@@ -302,6 +332,10 @@ def _prepare_report_context(results: List[Tuple[FundAnalysisData, dict]]) -> dic
     return {
         "advice_count": advice_count,
         "avg_ret30": avg_ret30,
+        "avg_ret90": avg_ret90,
+        "avg_ret180": avg_ret180,
+        "avg_ret1y": avg_ret1y,
+        "avg_ret3y": avg_ret3y,
         "ranked": ranked,
         "high_risk": high_risk,
         "medium_risk": medium_risk,
@@ -321,6 +355,10 @@ def _generate_full_report(
     ctx = _prepare_report_context(results)
     advice_count = ctx["advice_count"]
     avg_ret30 = ctx["avg_ret30"]
+    avg_ret90 = ctx["avg_ret90"]
+    avg_ret180 = ctx["avg_ret180"]
+    avg_ret1y = ctx["avg_ret1y"]
+    avg_ret3y = ctx["avg_ret3y"]
     ranked = ctx["ranked"]
     high_risk = ctx["high_risk"]
     medium_risk = ctx["medium_risk"]
@@ -366,6 +404,10 @@ def _generate_full_report(
         f"| 🔴 建议减仓 | **{advice_count.get('减仓', 0)}** 只 |",
         f"| 🟡 建议观望 | **{advice_count.get('观望', 0)}** 只 |",
         f"| 📈 平均近30日收益 | **{avg_ret30:+.2f}%** |",
+        f"| 📈 平均近90日收益 | **{avg_ret90:+.2f}%** |",
+        f"| 📈 平均近180日收益 | **{avg_ret180:+.2f}%** |",
+        f"| 📈 平均近1年收益 | **{avg_ret1y:+.2f}%** |",
+        f"| 📈 平均近3年收益 | **{avg_ret3y:+.2f}%** |",
         "",
         "---",
         "",
@@ -405,7 +447,7 @@ def _generate_full_report(
             d = x["data"]
             header.append(
                 f"- {_ADVICE_EMOJI.get(x['advice'], '⚪')} {d.info.name} ({d.info.code}) | "
-                f"信号分 {x['signal_score']} | 近30日 {_fmt_pct(d.history.ret_30d)}"
+                f"信号分 {x['signal_score']} | 30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)}"
             )
         header.append("")
     if focus_risk:
@@ -415,7 +457,7 @@ def _generate_full_report(
             d = x["data"]
             header.append(
                 f"- {_RISK_EMOJI.get(x['risk_level'], x['risk_level'])} {d.info.name} ({d.info.code}) | "
-                f"近30日 {_fmt_pct(d.history.ret_30d)} | 最大回撤 {d.history.max_drawdown_pct:.2f}%"
+                f"30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)} | 最大回撤 {d.history.max_drawdown_pct:.2f}%"
             )
         header.append("")
     if not has_focus:
@@ -427,8 +469,8 @@ def _generate_full_report(
         "",
         "## 🧭 快速总览",
         "",
-        "| 基金 | 建议 | 信号分 | 风险 | 近30日 | 最大回撤 | 趋势 |",
-        "|------|------|--------|------|--------|----------|------|",
+        "| 基金 | 建议 | 信号分 | 风险 | 30天 | 90天 | 180天 | 1年 | 3年 | 最大回撤 | 趋势 |",
+        "|------|------|--------|------|------|------|-------|-----|-----|----------|------|",
     ]
 
     for x in ranked:
@@ -438,7 +480,9 @@ def _generate_full_report(
         risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
         header.append(
             f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | {risk_text} | "
-            f"{_fmt_pct(d.history.ret_30d)} | {d.history.max_drawdown_pct:.2f}% | {d.history.trend_signal} |"
+            f"{_fmt_pct(d.history.ret_30d)} | {_fmt_pct(d.history.ret_90d)} | {_fmt_pct(d.history.ret_180d)} | "
+            f"{_fmt_pct(d.history.ret_1y)} | {_fmt_pct(d.history.ret_3y)} | "
+            f"{d.history.max_drawdown_pct:.2f}% | {d.history.trend_signal} |"
         )
 
     header += [
@@ -488,6 +532,10 @@ def _generate_simple_report(
     ctx = _prepare_report_context(results)
     advice_count = ctx["advice_count"]
     avg_ret30 = ctx["avg_ret30"]
+    avg_ret90 = ctx["avg_ret90"]
+    avg_ret180 = ctx["avg_ret180"]
+    avg_ret1y = ctx["avg_ret1y"]
+    avg_ret3y = ctx["avg_ret3y"]
     ranked = ctx["ranked"]
     high_risk = ctx["high_risk"]
 
@@ -506,6 +554,10 @@ def _generate_simple_report(
         f"- 🔴 减仓：**{advice_count.get('减仓', 0)}** 只",
         f"- 🟡 观望：**{advice_count.get('观望', 0)}** 只",
         f"- 📈 平均近30日收益：**{avg_ret30:+.2f}%**",
+        f"- 📈 平均近90日收益：**{avg_ret90:+.2f}%**",
+        f"- 📈 平均近180日收益：**{avg_ret180:+.2f}%**",
+        f"- 📈 平均近1年收益：**{avg_ret1y:+.2f}%**",
+        f"- 📈 平均近3年收益：**{avg_ret3y:+.2f}%**",
         "",
         "## 🎯 今日重点",
         "",
@@ -517,7 +569,7 @@ def _generate_simple_report(
             d = x["data"]
             lines.append(
                 f"- 🟢 {d.info.name}({d.info.code}) | 信号分 {x['signal_score']} | "
-                f"近30日 {_fmt_pct(d.history.ret_30d)}"
+                f"30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)}"
             )
         lines.append("")
 
@@ -527,7 +579,7 @@ def _generate_simple_report(
             d = x["data"]
             lines.append(
                 f"- 🔴 {d.info.name}({d.info.code}) | 最大回撤 {d.history.max_drawdown_pct:.2f}% | "
-                f"近30日 {_fmt_pct(d.history.ret_30d)}"
+                f"30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)}"
             )
         lines.append("")
 
@@ -538,8 +590,8 @@ def _generate_simple_report(
     lines += [
         "## 🧾 基金清单（按信号分）",
         "",
-        "| 基金 | 建议 | 信号分 | 风险 | 近30日 | 趋势 |",
-        "|------|------|--------|------|--------|------|",
+        "| 基金 | 建议 | 信号分 | 风险 | 30天 | 90天 | 180天 | 1年 | 3年 | 趋势 |",
+        "|------|------|--------|------|------|------|-------|-----|-----|------|",
     ]
 
     for x in ranked:
@@ -548,7 +600,9 @@ def _generate_simple_report(
         risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
         lines.append(
             f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | "
-            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {d.history.trend_signal} |"
+            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {_fmt_pct(d.history.ret_90d)} | "
+            f"{_fmt_pct(d.history.ret_180d)} | {_fmt_pct(d.history.ret_1y)} | {_fmt_pct(d.history.ret_3y)} | "
+            f"{d.history.trend_signal} |"
         )
 
     lines += [
@@ -571,6 +625,10 @@ def _generate_summary_report(
     ctx = _prepare_report_context(results)
     advice_count = ctx["advice_count"]
     avg_ret30 = ctx["avg_ret30"]
+    avg_ret90 = ctx["avg_ret90"]
+    avg_ret180 = ctx["avg_ret180"]
+    avg_ret1y = ctx["avg_ret1y"]
+    avg_ret3y = ctx["avg_ret3y"]
     ranked = ctx["ranked"]
     high_risk = ctx["high_risk"]
 
@@ -591,6 +649,10 @@ def _generate_summary_report(
         f"| 🔴 减仓 | **{advice_count.get('减仓', 0)}** 只 |",
         f"| 🟡 观望 | **{advice_count.get('观望', 0)}** 只 |",
         f"| 📈 平均近30日收益 | **{avg_ret30:+.2f}%** |",
+        f"| 📈 平均近90日收益 | **{avg_ret90:+.2f}%** |",
+        f"| 📈 平均近180日收益 | **{avg_ret180:+.2f}%** |",
+        f"| 📈 平均近1年收益 | **{avg_ret1y:+.2f}%** |",
+        f"| 📈 平均近3年收益 | **{avg_ret3y:+.2f}%** |",
         "",
         "## 🎯 优先关注（Top 5）",
         "",
@@ -601,7 +663,7 @@ def _generate_summary_report(
             d = x["data"]
             lines.append(
                 f"- {_ADVICE_EMOJI.get(x['advice'], '⚪')} {d.info.name} ({d.info.code}) | "
-                f"信号分 {x['signal_score']} | 近30日 {_fmt_pct(d.history.ret_30d)}"
+                f"信号分 {x['signal_score']} | 30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)}"
             )
     else:
         lines.append("- 今日暂无可用数据。")
@@ -617,7 +679,7 @@ def _generate_summary_report(
             d = x["data"]
             lines.append(
                 f"- {_RISK_EMOJI.get(x['risk_level'], x['risk_level'])} {d.info.name} ({d.info.code}) | "
-                f"最大回撤 {d.history.max_drawdown_pct:.2f}% | 近30日 {_fmt_pct(d.history.ret_30d)}"
+                f"最大回撤 {d.history.max_drawdown_pct:.2f}% | 30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)}"
             )
     else:
         lines.append("- 今日无高风险基金。")
@@ -626,8 +688,8 @@ def _generate_summary_report(
         "",
         "## 🧾 汇总清单（按信号分）",
         "",
-        "| 基金 | 建议 | 信号分 | 风险 | 近30日 | 趋势 |",
-        "|------|------|--------|------|--------|------|",
+        "| 基金 | 建议 | 信号分 | 风险 | 30天 | 90天 | 180天 | 1年 | 3年 | 趋势 |",
+        "|------|------|--------|------|------|------|-------|-----|-----|------|",
     ]
 
     for x in ranked:
@@ -636,7 +698,9 @@ def _generate_summary_report(
         risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
         lines.append(
             f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | "
-            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {d.history.trend_signal} |"
+            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {_fmt_pct(d.history.ret_90d)} | "
+            f"{_fmt_pct(d.history.ret_180d)} | {_fmt_pct(d.history.ret_1y)} | {_fmt_pct(d.history.ret_3y)} | "
+            f"{d.history.trend_signal} |"
         )
 
     lines += [
