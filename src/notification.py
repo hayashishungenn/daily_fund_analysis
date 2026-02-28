@@ -46,33 +46,205 @@ def _get_smtp_config(sender: str):
 def _md_to_html(md: str) -> str:
     """Markdown -> HTML 转换（邮件专用）"""
     css_style = """
-        body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.6; color: #24292e; font-size: 14px; padding: 16px; max-width: 900px; margin: 0 auto; }
-        h1 { font-size: 20px; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; color: #0366d6; }
-        h2 { font-size: 18px; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
-        h3 { font-size: 16px; }
-        p { margin: 0 0 8px 0; }
-        table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
-        th, td { border: 1px solid #dfe2e5; padding: 6px 10px; text-align: left; }
+        body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.3; color: #24292e; font-size: 14px; padding: 14px; max-width: 960px; margin: 0 auto; }
+        h1 { font-size: 20px; border-bottom: 1px solid #eaecef; padding-bottom: 0.2em; color: #0366d6; margin: 0 0 8px 0; }
+        h2 { font-size: 17px; border-bottom: 1px solid #eaecef; padding-bottom: 0.2em; margin: 12px 0 6px 0; }
+        h3 { font-size: 15px; margin: 10px 0 4px 0; }
+        p { margin: 0 0 3px 0; }
+        table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
+        th, td { border: 1px solid #dfe2e5; padding: 3px 5px; text-align: left; }
         th { background-color: #f6f8fa; font-weight: 600; }
-        ul, ol { padding-left: 20px; margin-bottom: 10px; }
-        li { margin: 2px 0; }
-        hr { height: 0.25em; margin: 16px 0; background-color: #e1e4e8; border: 0; }
+        ul, ol { padding-left: 18px; margin: 3px 0 5px 0; }
+        li { margin: 1px 0; }
+        hr { height: 0.2em; margin: 10px 0; background-color: #e1e4e8; border: 0; }
         code { padding: 0.2em 0.4em; background-color: rgba(27,31,35,0.05); border-radius: 3px; }
-        blockquote { color: #6a737d; border-left: 0.25em solid #dfe2e5; padding: 0 1em; margin: 0 0 10px 0; }
+        pre { margin: 6px 0; padding: 8px 10px; background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 4px; line-height: 1.2; font-size: 12px; overflow-x: auto; white-space: pre; }
+        blockquote { color: #6a737d; border-left: 0.25em solid #dfe2e5; padding: 0 1em; margin: 4px 0; }
+        table.text-grid { width: auto; table-layout: auto; }
+        table.text-grid th, table.text-grid td { font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; white-space: nowrap; }
+        table.text-grid th.align-right, table.text-grid td.align-right { text-align: right; }
+        table.text-grid th.align-left, table.text-grid td.align-left { text-align: left; }
     """
-    try:
-        import markdown2
-        html_body = markdown2.markdown(
-            md,
-            extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"],
+
+    def _format_inline_md(text: str) -> str:
+        s = _html.escape(text)
+        s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+        s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+        s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+        return s
+
+    def _looks_like_text_table(code_lines: List[str]) -> bool:
+        if len(code_lines) < 2:
+            return False
+        header = code_lines[0]
+        separator = code_lines[1].strip()
+        return (
+            "|" in header
+            and "+" in separator
+            and separator
+            and set(separator) <= {"-", "+", " "}
         )
-    except Exception:
-        html_body = md
-        html_body = re.sub(r"^#{1,3} (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
-        html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
-        html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body)
-        html_body = re.sub(r"- (.+)", r"<li>\1</li>", html_body)
-        html_body = re.sub(r"\n", "<br>", html_body)
+
+    def _is_numeric_like(cell: str) -> bool:
+        return bool(re.match(r"^[+\-]?\d+(?:\.\d+)?%?$", cell))
+
+    def _render_text_table(code_lines: List[str]) -> Optional[str]:
+        if not _looks_like_text_table(code_lines):
+            return None
+
+        rows = []
+        for raw in code_lines:
+            if not raw.strip():
+                continue
+            rows.append([cell.strip() for cell in raw.split("|")])
+
+        if len(rows) < 3:
+            return None
+
+        header_cells = rows[0]
+        body_rows = rows[2:]
+        if not header_cells:
+            return None
+
+        normalized_body = []
+        for row in body_rows:
+            if len(row) < len(header_cells):
+                row = row + [""] * (len(header_cells) - len(row))
+            normalized_body.append(row[: len(header_cells)])
+
+        aligns = []
+        for col_idx in range(len(header_cells)):
+            col_values = [row[col_idx] for row in normalized_body if row[col_idx]]
+            if col_values and all(_is_numeric_like(value) for value in col_values):
+                aligns.append("align-right")
+            else:
+                aligns.append("align-left")
+
+        table_html = ['<table class="text-grid"><thead><tr>']
+        for idx, cell in enumerate(header_cells):
+            table_html.append(f'<th class="{aligns[idx]}">{_format_inline_md(cell)}</th>')
+        table_html.append("</tr></thead><tbody>")
+        for row in normalized_body:
+            table_html.append("<tr>")
+            for idx, cell in enumerate(row):
+                table_html.append(f'<td class="{aligns[idx]}">{_format_inline_md(cell)}</td>')
+            table_html.append("</tr>")
+        table_html.append("</tbody></table>")
+        return "".join(table_html)
+
+    def _render_markdown_fallback(markdown_text: str) -> str:
+        lines = markdown_text.splitlines()
+        html_parts: List[str] = []
+        paragraph: List[str] = []
+        list_items: List[str] = []
+        i = 0
+
+        def _flush_paragraph() -> None:
+            nonlocal paragraph
+            if paragraph:
+                html_parts.append(f"<p>{'<br>'.join(_format_inline_md(x) for x in paragraph)}</p>")
+                paragraph = []
+
+        def _flush_list() -> None:
+            nonlocal list_items
+            if list_items:
+                html_parts.append("<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>")
+                list_items = []
+
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            if stripped.startswith("```"):
+                _flush_paragraph()
+                _flush_list()
+                code_lines: List[str] = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                text_table_html = _render_text_table(code_lines)
+                if text_table_html:
+                    html_parts.append(text_table_html)
+                else:
+                    html_parts.append(f"<pre>{_html.escape(chr(10).join(code_lines))}</pre>")
+                i += 1
+                continue
+
+            if stripped.startswith("|") and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if re.match(r"^\|?[\s:\-|\u2014]+\|?$", next_line):
+                    _flush_paragraph()
+                    _flush_list()
+                    table_lines = [line]
+                    i += 2
+                    while i < len(lines) and lines[i].strip().startswith("|"):
+                        table_lines.append(lines[i])
+                        i += 1
+
+                    rows = []
+                    for raw in table_lines:
+                        cells = [c.strip() for c in raw.strip().strip("|").split("|")]
+                        rows.append(cells)
+
+                    if rows:
+                        head = rows[0]
+                        body = rows[1:]
+                        table_html = ["<table><thead><tr>"]
+                        table_html.extend(f"<th>{_format_inline_md(c)}</th>" for c in head)
+                        table_html.append("</tr></thead><tbody>")
+                        for row in body:
+                            table_html.append("<tr>")
+                            table_html.extend(f"<td>{_format_inline_md(c)}</td>" for c in row)
+                            table_html.append("</tr>")
+                        table_html.append("</tbody></table>")
+                        html_parts.append("".join(table_html))
+                    continue
+
+            if not stripped:
+                _flush_paragraph()
+                _flush_list()
+                i += 1
+                continue
+
+            if stripped == "---":
+                _flush_paragraph()
+                _flush_list()
+                html_parts.append("<hr>")
+                i += 1
+                continue
+
+            m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+            if m:
+                _flush_paragraph()
+                _flush_list()
+                level = min(len(m.group(1)), 3)
+                html_parts.append(f"<h{level}>{_format_inline_md(m.group(2))}</h{level}>")
+                i += 1
+                continue
+
+            if stripped.startswith("> "):
+                _flush_paragraph()
+                _flush_list()
+                html_parts.append(f"<blockquote>{_format_inline_md(stripped[2:])}</blockquote>")
+                i += 1
+                continue
+
+            if stripped.startswith("- "):
+                _flush_paragraph()
+                list_items.append(_format_inline_md(stripped[2:]))
+                i += 1
+                continue
+
+            paragraph.append(line)
+            i += 1
+
+        _flush_paragraph()
+        _flush_list()
+        return "".join(html_parts)
+
+    # 邮件正文采用固定渲染器，避免不同环境下 fenced code / table 的输出不一致。
+    html_body = _render_markdown_fallback(md)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -133,10 +305,19 @@ def _save_email_state(state_file: Path, fingerprint: str) -> None:
 def _md_to_telegram_html(md: str) -> str:
     """将 Markdown 转换为 Telegram HTML（避免特殊字符报错）"""
     text = _html.escape(md)             # 先转义 < > &
+    code_blocks: List[str] = []
+
+    def _capture_code_block(match: re.Match) -> str:
+        code_blocks.append(match.group(1).strip("\n"))
+        return f"@@CODEBLOCK_{len(code_blocks) - 1}@@"
+
+    text = re.sub(r"```(?:[a-zA-Z0-9_+-]+)?\n(.*?)```", _capture_code_block, text, flags=re.S)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     text = re.sub(r"^#{1,3} (.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f"@@CODEBLOCK_{i}@@", f"<pre>{block}</pre>")
     return text
 
 

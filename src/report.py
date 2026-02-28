@@ -6,6 +6,7 @@
 """
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, List, Tuple
@@ -61,6 +62,87 @@ def _fmt_lookback_returns(hist) -> str:
         f"1年 {_fmt_pct(hist.ret_1y)} | "
         f"3年 {_fmt_pct(hist.ret_3y)}"
     )
+
+
+def _char_width(ch: str) -> int:
+    if unicodedata.east_asian_width(ch) in ("W", "F"):
+        return 2
+    return 1
+
+
+def _display_width(text: str) -> int:
+    return sum(_char_width(ch) for ch in str(text))
+
+
+def _truncate_display(text: str, max_width: int) -> str:
+    s = str(text)
+    if _display_width(s) <= max_width:
+        return s
+    ellipsis = "..."
+    target = max(1, max_width - len(ellipsis))
+    acc = []
+    width = 0
+    for ch in s:
+        ch_w = _char_width(ch)
+        if width + ch_w > target:
+            break
+        acc.append(ch)
+        width += ch_w
+    return "".join(acc) + ellipsis
+
+
+def _pad_display(text: str, width: int, align: str = "left") -> str:
+    s = _truncate_display(text, width)
+    pad = max(0, width - _display_width(s))
+    if align == "right":
+        return " " * pad + s
+    return s + " " * pad
+
+
+def _build_text_table(headers: List[str], rows: List[List[str]], aligns: List[str], widths: List[int]) -> str:
+    header_line = " | ".join(_pad_display(h, w, "left") for h, w in zip(headers, widths))
+    separator_line = "-+-".join("-" * w for w in widths)
+    body_lines = [
+        " | ".join(_pad_display(cell, w, a) for cell, w, a in zip(row, widths, aligns))
+        for row in rows
+    ]
+    return "```text\n" + "\n".join([header_line, separator_line] + body_lines) + "\n```"
+
+
+def _build_overview_table(ranked: List[dict], include_drawdown: bool) -> str:
+    headers = ["基金", "建议", "分数", "风险", "30天", "90天", "180天", "1年", "3年"]
+    aligns = ["left", "left", "right", "left", "right", "right", "right", "right", "right"]
+    widths = [26, 6, 4, 5, 8, 8, 8, 8, 8]
+
+    if include_drawdown:
+        headers += ["回撤", "趋势"]
+        aligns += ["right", "left"]
+        widths += [8, 8]
+    else:
+        headers += ["趋势"]
+        aligns += ["left"]
+        widths += [8]
+
+    rows: List[List[str]] = []
+    for x in ranked:
+        d = x["data"]
+        row = [
+            f"{d.info.name}({d.info.code})",
+            x["advice"],
+            str(x["signal_score"]),
+            x["risk_level"],
+            _fmt_pct(d.history.ret_30d),
+            _fmt_pct(d.history.ret_90d),
+            _fmt_pct(d.history.ret_180d),
+            _fmt_pct(d.history.ret_1y),
+            _fmt_pct(d.history.ret_3y),
+        ]
+        if include_drawdown:
+            row += [f"{d.history.max_drawdown_pct:.2f}%", d.history.trend_signal]
+        else:
+            row += [d.history.trend_signal]
+        rows.append(row)
+    return _build_text_table(headers, rows, aligns, widths)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -225,7 +307,6 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
 
     lines = [
         f"### {advice_icon} {info.name} ({info.code})",
-        "",
         (
             f"**操作建议：{advice}** | **信号分：{signal_score}/100** | "
             f"**置信度：{confidence}** | "
@@ -271,7 +352,6 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
     _append_holdings(lines, "基金持仓", data.top_fund_holdings, limit=3)
 
     lines += [
-        "",
         f"- 持仓结论：{portfolio_review or '持仓结构无异常结论'}",
         f"- 回测结论：{backtest_review or '回测结论暂不可用'}",
     ]
@@ -281,10 +361,8 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
         lines.append(f"- 关键风险：{'；'.join(risk_items[:3])}")
 
     lines += [
-        "",
         f"- 操作理由：{reason}",
         f"- 风险提示：{risk}",
-        "",
         "---",
     ]
 
@@ -469,21 +547,8 @@ def _generate_full_report(
         "",
         "## 🧭 快速总览",
         "",
-        "| 基金 | 建议 | 信号分 | 风险 | 30天 | 90天 | 180天 | 1年 | 3年 | 最大回撤 | 趋势 |",
-        "|------|------|--------|------|------|------|-------|-----|-----|----------|------|",
     ]
-
-    for x in ranked:
-        d = x["data"]
-        advice = x["advice"]
-        advice_text = f"{_ADVICE_EMOJI.get(advice, '⚪')}{advice}"
-        risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
-        header.append(
-            f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | {risk_text} | "
-            f"{_fmt_pct(d.history.ret_30d)} | {_fmt_pct(d.history.ret_90d)} | {_fmt_pct(d.history.ret_180d)} | "
-            f"{_fmt_pct(d.history.ret_1y)} | {_fmt_pct(d.history.ret_3y)} | "
-            f"{d.history.max_drawdown_pct:.2f}% | {d.history.trend_signal} |"
-        )
+    header.append(_build_overview_table(ranked, include_drawdown=True))
 
     header += [
         "",
@@ -590,20 +655,8 @@ def _generate_simple_report(
     lines += [
         "## 🧾 基金清单（按信号分）",
         "",
-        "| 基金 | 建议 | 信号分 | 风险 | 30天 | 90天 | 180天 | 1年 | 3年 | 趋势 |",
-        "|------|------|--------|------|------|------|-------|-----|-----|------|",
     ]
-
-    for x in ranked:
-        d = x["data"]
-        advice_text = f"{_ADVICE_EMOJI.get(x['advice'], '⚪')}{x['advice']}"
-        risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
-        lines.append(
-            f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | "
-            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {_fmt_pct(d.history.ret_90d)} | "
-            f"{_fmt_pct(d.history.ret_180d)} | {_fmt_pct(d.history.ret_1y)} | {_fmt_pct(d.history.ret_3y)} | "
-            f"{d.history.trend_signal} |"
-        )
+    lines.append(_build_overview_table(ranked, include_drawdown=False))
 
     lines += [
         "",
@@ -688,20 +741,8 @@ def _generate_summary_report(
         "",
         "## 🧾 汇总清单（按信号分）",
         "",
-        "| 基金 | 建议 | 信号分 | 风险 | 30天 | 90天 | 180天 | 1年 | 3年 | 趋势 |",
-        "|------|------|--------|------|------|------|-------|-----|-----|------|",
     ]
-
-    for x in ranked:
-        d = x["data"]
-        advice_text = f"{_ADVICE_EMOJI.get(x['advice'], '⚪')}{x['advice']}"
-        risk_text = _RISK_EMOJI.get(x["risk_level"], x["risk_level"])
-        lines.append(
-            f"| {d.info.name}({d.info.code}) | {advice_text} | {x['signal_score']} | "
-            f"{risk_text} | {_fmt_pct(d.history.ret_30d)} | {_fmt_pct(d.history.ret_90d)} | "
-            f"{_fmt_pct(d.history.ret_180d)} | {_fmt_pct(d.history.ret_1y)} | {_fmt_pct(d.history.ret_3y)} | "
-            f"{d.history.trend_signal} |"
-        )
+    lines.append(_build_overview_table(ranked, include_drawdown=False))
 
     lines += [
         "",
