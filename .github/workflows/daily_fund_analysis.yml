@@ -1,9 +1,9 @@
 name: 每日基金分析
 
 on:
-  # 定时触发 - 每天北京时间 14:00（UTC 06:00）
+  # 定时触发 - 中国交易日北京时间 18:00（UTC 10:00）
   schedule:
-    - cron: '0 6 * * *'   # 每天 UTC 06:00 = 北京时间 14:00（是否执行由法定工作日检查决定）
+    - cron: '0 10 * * 1-5'   # 周一到周五 UTC 10:00 = 北京时间 18:00（节假日是否执行由交易日检查决定）
 
   # 手动触发
   workflow_dispatch:
@@ -46,8 +46,8 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 检查中国大陆法定工作日
-        id: workday_check
+      - name: 检查中国大陆交易日
+        id: trading_day_check
         run: |
           python - <<'PY'
           import os
@@ -55,25 +55,25 @@ jobs:
           from chinese_calendar import is_workday
 
           today_cn = datetime.now(timezone(timedelta(hours=8))).date()
-          is_cn_workday = is_workday(today_cn)
-          print(f"北京时间日期: {today_cn} | 法定工作日: {is_cn_workday}")
+          is_cn_trading_day = today_cn.weekday() < 5 and is_workday(today_cn)
+          print(f"北京时间日期: {today_cn} | 中国交易日: {is_cn_trading_day}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"is_workday={'true' if is_cn_workday else 'false'}\n")
+              f.write(f"is_trading_day={'true' if is_cn_trading_day else 'false'}\n")
               f.write(f"today_cn={today_cn}\n")
           PY
 
-      - name: 非法定工作日跳过
-        if: github.event_name == 'schedule' && steps.workday_check.outputs.is_workday != 'true'
+      - name: 非交易日跳过
+        if: github.event_name == 'schedule' && steps.trading_day_check.outputs.is_trading_day != 'true'
         run: |
-          echo "北京时间 ${{ steps.workday_check.outputs.today_cn }} 不是中国大陆法定工作日，跳过本次分析。"
+          echo "北京时间 ${{ steps.trading_day_check.outputs.today_cn }} 不是中国大陆交易日，跳过本次分析。"
 
       - name: 创建必要目录
-        if: github.event_name != 'schedule' || steps.workday_check.outputs.is_workday == 'true'
+        if: github.event_name != 'schedule' || steps.trading_day_check.outputs.is_trading_day == 'true'
         run: mkdir -p logs reports data
 
       - name: 执行基金分析
-        if: github.event_name != 'schedule' || steps.workday_check.outputs.is_workday == 'true'
+        if: github.event_name != 'schedule' || steps.trading_day_check.outputs.is_trading_day == 'true'
         env:
           # ==========================================
           # 自选基金列表（逗号分隔，天天基金代码）
