@@ -23,6 +23,8 @@
 - 快速总览表（信号分、风险等级、30天/90天/180天/1年/3年收益、回撤、趋势）
 - 每只基金的详细分析与持仓摘要
 
+数据源说明：基金主数据通过 `xalpha` 项目接口抓取，并参考 `real-time-fund` 使用的 `fundgz` / `F10DataApi` / 东方财富持仓接口补强；评级、排名、大盘背景等补充数据通过 `AkShare` 获取。
+
 ---
 
 ## 目录
@@ -426,6 +428,7 @@ daily_fund_analysis/
 │   ├── config.py
 │   ├── logging_config.py
 │   ├── fund_data.py
+│   ├── xalpha_provider.py
 │   ├── analyzer.py
 │   ├── report.py
 │   ├── notification.py

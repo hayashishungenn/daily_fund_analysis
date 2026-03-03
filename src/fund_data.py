@@ -1,19 +1,26 @@
 # -*- coding: utf-8 -*-
 """
 基金数据获取模块
-- 使用 akshare 拉取: 基本信息、历史净值、持仓数据、评级、经理业绩、大盘背景
+- 基金主数据通过 xalpha 项目接口抓取，AkShare 用于补充评级、排名、大盘背景与回退链路
 - 计算技术指标: MA5/MA10/MA20、最大回撤、近期收益率
 """
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
+import re
 from typing import List, Optional, Dict, Any
 
 import numpy as np
 import pandas as pd
+from src.xalpha_provider import (
+    fetch_fund_bond_holdings as xa_fetch_fund_bond_holdings,
+    fetch_fund_nav_history as xa_fetch_fund_nav_history_df,
+    fetch_fund_portfolio_snapshot as xa_fetch_fund_portfolio_snapshot,
+    fetch_fund_realtime_info as xa_fetch_fund_realtime_info,
+    fetch_fund_stock_holdings as xa_fetch_fund_stock_holdings,
+)
 
 logger = logging.getLogger(__name__)
-_XQ_UNSUPPORTED_CODES: set = set()
 
 # ─── 近期季报日期（按优先级，最新在前）─────────────────────────────────────────
 def _recent_quarter_dates() -> List[str]:
@@ -32,11 +39,6 @@ def _recent_quarter_dates() -> List[str]:
         if y not in seen:
             seen.append(y)
     return seen[:3]
-
-
-# ─── ETF 场内基金前缀（xq 接口不稳定，直接走东方财富） ──────────────────────────
-_ETF_PREFIXES = {"15", "16", "18", "50", "51", "52", "56", "58", "59", "88"}
-
 
 @dataclass
 class FundInfo:
@@ -423,13 +425,24 @@ def _to_float(v, default: float = 0.0) -> float:
         return default
 
 
-def _should_skip_xq(code: str) -> bool:
-    code = (code or "").strip()
-    if code in _XQ_UNSUPPORTED_CODES:
-        return True
-    if len(code) == 6 and code[:2] in _ETF_PREFIXES:
-        return True
-    return False
+def _extract_leading_number(text: Any, default: float = 0.0) -> float:
+    match = re.search(r"(-?\d+(?:\.\d+)?)", str(text or ""))
+    if not match:
+        return default
+    return _to_float(match.group(1), default)
+
+
+def _looks_like_fof(fund_type: str) -> bool:
+    ft_raw = fund_type or ""
+    ft = ft_raw.lower()
+    return "fof" in ft or any(keyword in ft_raw for keyword in ("基金中基金", "母基金"))
+
+
+def _detect_nav_columns(df: pd.DataFrame) -> tuple[str, str, Optional[str]]:
+    date_col = "date" if "date" in df.columns else "净值日期" if "净值日期" in df.columns else str(df.columns[0])
+    nav_col = "netvalue" if "netvalue" in df.columns else "单位净值" if "单位净值" in df.columns else str(df.columns[1])
+    change_col = "日增长率" if "日增长率" in df.columns else None
+    return date_col, nav_col, change_col
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -560,41 +573,23 @@ def fetch_market_context() -> MarketContext:
 # 基金数据获取
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_fund_basic_info(code: str) -> FundInfo:
+def fetch_fund_basic_info(code: str, rt_info: Optional[Dict[str, Any]] = None) -> FundInfo:
     """获取基金基本信息（含评级 + 经理业绩）"""
-    if _should_skip_xq(code):
-        logger.info(f"[{code}] 跳过 xq 接口，使用东方财富接口")
-        return _fetch_basic_info_fallback(code)
     try:
-        import akshare as ak
-        df = ak.fund_individual_basic_info_xq(symbol=code)
-        info_dict: Dict[str, object] = {}
-        if df is not None and not df.empty:
-            for _, row in df.iterrows():
-                key = str(row.iloc[0]).strip()
-                val = row.iloc[1]
-                info_dict[key] = val
-        name = str(info_dict.get("基金名称", info_dict.get("名称", "未知")))
-        manager_name = str(info_dict.get("基金经理", info_dict.get("经理", "未知")))
+        rt = rt_info or xa_fetch_fund_realtime_info(code)
+        manager_name = str(rt.get("manager", "") or "未知").strip() or "未知"
         info = FundInfo(
             code=code,
-            name=name,
-            fund_type=str(info_dict.get("基金类型", info_dict.get("类型", "未知"))),
+            name=str(rt.get("name", code) or code),
+            fund_type=str(rt.get("type", "未知") or "未知"),
             manager=manager_name,
-            size_billion=_to_float(info_dict.get("基金规模", 0)),
+            size_billion=_extract_leading_number(rt.get("scale", 0)),
         )
         _enrich_manager_info(info, manager_name)
         _enrich_rating(info, code)
         return info
-    except KeyError as e:
-        if str(e).strip("'\"") == "data":
-            _XQ_UNSUPPORTED_CODES.add(code)
-            logger.info(f"[{code}] xq 返回缺少 data 字段，已切换为东方财富接口")
-        else:
-            logger.warning(f"[{code}] xq 接口返回异常: {e}")
-        return _fetch_basic_info_fallback(code)
     except Exception as e:
-        logger.warning(f"[{code}] 获取基金基本信息失败（xq）: {e}，尝试备用接口...")
+        logger.warning(f"[{code}] 获取基金基本信息失败（xalpha）: {e}，尝试 AkShare 备用接口...")
         return _fetch_basic_info_fallback(code)
 
 
@@ -624,7 +619,7 @@ def _enrich_rating(info: FundInfo, code: str) -> None:
 
 
 def _fetch_basic_info_fallback(code: str) -> FundInfo:
-    """备用接口获取基金基本信息（东方财富净值走势 + 名称接口）"""
+    """AkShare 备用接口获取基金基本信息。"""
     info = FundInfo(code=code)
     try:
         import akshare as ak
@@ -654,6 +649,110 @@ def _fetch_basic_info_fallback(code: str) -> FundInfo:
     return info
 
 
+def _build_history_from_nav_df(
+    code: str,
+    df: pd.DataFrame,
+    days: int,
+    backtest_enabled: bool,
+    backtest_forward_points: int,
+    backtest_min_train_points: int,
+    backtest_neutral_band_pct: float,
+) -> FundHistory:
+    date_col, nav_col, _ = _detect_nav_columns(df)
+    working = df.copy()
+    working[date_col] = pd.to_datetime(working[date_col], errors="coerce")
+    working = working.dropna(subset=[date_col]).sort_values(date_col)
+    working[nav_col] = pd.to_numeric(working[nav_col], errors="coerce")
+    working = working.dropna(subset=[nav_col])
+
+    navs = working[nav_col].tolist()
+    dates = working[date_col].dt.strftime("%Y-%m-%d").tolist()
+    if len(navs) < 2:
+        raise ValueError("净值数据不足")
+
+    series = pd.Series(navs)
+    ma5 = float(series.rolling(5).mean().iloc[-1]) if len(navs) >= 5 else None
+    ma10 = float(series.rolling(10).mean().iloc[-1]) if len(navs) >= 10 else None
+    ma20 = float(series.rolling(20).mean().iloc[-1]) if len(navs) >= 20 else None
+    ma60 = float(series.rolling(60).mean().iloc[-1]) if len(navs) >= 60 else None
+    rsi14 = _calc_rsi(navs, period=14)
+    macd_dif, macd_dea, macd_hist = _calc_macd(navs)
+    volatility_30d, sharpe_30d = _calc_annualized_volatility_and_sharpe(navs, window_points=30)
+    downside_volatility_30d = _calc_downside_volatility(navs, window_points=30)
+    momentum_10d = _calc_return(navs, 10)
+    max_drawdown_pct = _calc_max_drawdown(navs[-90:] if len(navs) >= 90 else navs)
+    ret_7d = _calc_return(navs, 7)
+    ret_30d = _calc_return(navs, 22)
+    ret_90d = _calc_return(navs, 65)
+    ret_180d = _calc_return(navs, 130)
+    ret_1y = _calc_return(navs, 252)
+    ret_3y = _calc_return(navs, 756)
+    trend_signal = _trend_signal(ma5, ma10, ma20)
+    trend_strength = _calc_trend_strength(
+        ma5=ma5,
+        ma10=ma10,
+        ma20=ma20,
+        ret_30d=ret_30d,
+        ret_90d=ret_90d,
+        ret_180d=ret_180d,
+        ret_1y=ret_1y,
+        ret_3y=ret_3y,
+        max_drawdown_pct=max_drawdown_pct,
+        rsi14=rsi14,
+        macd_hist=macd_hist,
+    )
+
+    if backtest_enabled:
+        bt = _calc_signal_backtest_metrics(
+            navs=navs,
+            forward_points=backtest_forward_points,
+            min_train_points=backtest_min_train_points,
+            neutral_band_pct=backtest_neutral_band_pct,
+        )
+    else:
+        bt = {
+            "samples": 0,
+            "direction_accuracy_pct": 0.0,
+            "bullish_win_rate_pct": 0.0,
+            "bearish_win_rate_pct": 0.0,
+            "avg_forward_return_pct": 0.0,
+            "recent_consistency": "关闭",
+        }
+
+    return FundHistory(
+        code=code,
+        dates=dates[-days:],
+        navs=navs[-days:],
+        ma5=ma5,
+        ma10=ma10,
+        ma20=ma20,
+        ma60=ma60,
+        max_drawdown_pct=max_drawdown_pct,
+        ret_7d=ret_7d,
+        ret_30d=ret_30d,
+        ret_90d=ret_90d,
+        ret_180d=ret_180d,
+        ret_1y=ret_1y,
+        ret_3y=ret_3y,
+        momentum_10d=momentum_10d,
+        volatility_30d=volatility_30d,
+        downside_volatility_30d=downside_volatility_30d,
+        sharpe_30d=sharpe_30d,
+        rsi14=rsi14,
+        macd_dif=macd_dif,
+        macd_dea=macd_dea,
+        macd_hist=macd_hist,
+        trend_strength=trend_strength,
+        trend_signal=trend_signal,
+        backtest_samples=int(bt["samples"]),
+        backtest_direction_accuracy_pct=float(bt["direction_accuracy_pct"]),
+        backtest_bullish_win_rate_pct=float(bt["bullish_win_rate_pct"]),
+        backtest_bearish_win_rate_pct=float(bt["bearish_win_rate_pct"]),
+        backtest_avg_forward_return_pct=float(bt["avg_forward_return_pct"]),
+        backtest_recent_consistency=str(bt["recent_consistency"]),
+    )
+
+
 def fetch_fund_nav_history(
     code: str,
     days: int = 30,
@@ -661,115 +760,38 @@ def fetch_fund_nav_history(
     backtest_forward_points: int = 10,
     backtest_min_train_points: int = 60,
     backtest_neutral_band_pct: float = 1.5,
+    nav_df: Optional[pd.DataFrame] = None,
 ) -> FundHistory:
-    """获取历史净值并计算技术指标（同时补充 latest_nav 避免重复请求）"""
+    """获取历史净值并计算技术指标。"""
     try:
-        import akshare as ak
-        df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
-        if df is None or df.empty:
-            raise ValueError("返回空数据")
-
-        # 已知列名: ['净值日期', '单位净值', '日增长率']
-        date_col = "净值日期" if "净值日期" in df.columns else df.columns[0]
-        nav_col = "单位净值" if "单位净值" in df.columns else df.columns[1]
-
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.dropna(subset=[date_col]).sort_values(date_col)
-        df[nav_col] = pd.to_numeric(df[nav_col], errors="coerce")
-        df = df.dropna(subset=[nav_col])
-
-        navs = df[nav_col].tolist()
-        dates = df[date_col].dt.strftime("%Y-%m-%d").tolist()
-
-        if len(navs) < 2:
-            raise ValueError("净值数据不足")
-
-        series = pd.Series(navs)
-        ma5 = float(series.rolling(5).mean().iloc[-1]) if len(navs) >= 5 else None
-        ma10 = float(series.rolling(10).mean().iloc[-1]) if len(navs) >= 10 else None
-        ma20 = float(series.rolling(20).mean().iloc[-1]) if len(navs) >= 20 else None
-        ma60 = float(series.rolling(60).mean().iloc[-1]) if len(navs) >= 60 else None
-        rsi14 = _calc_rsi(navs, period=14)
-        macd_dif, macd_dea, macd_hist = _calc_macd(navs)
-        volatility_30d, sharpe_30d = _calc_annualized_volatility_and_sharpe(navs, window_points=30)
-        downside_volatility_30d = _calc_downside_volatility(navs, window_points=30)
-        momentum_10d = _calc_return(navs, 10)
-        max_drawdown_pct = _calc_max_drawdown(navs[-90:] if len(navs) >= 90 else navs)
-        ret_7d = _calc_return(navs, 7)
-        ret_30d = _calc_return(navs, 22)    # 约22个交易日 ≈ 1个月
-        ret_90d = _calc_return(navs, 65)    # 约65个交易日 ≈ 3个月
-        ret_180d = _calc_return(navs, 130)  # 约130个交易日 ≈ 6个月
-        ret_1y = _calc_return(navs, 252)    # 约252个交易日 ≈ 1年
-        ret_3y = _calc_return(navs, 756)    # 约756个交易日 ≈ 3年
-        trend_signal = _trend_signal(ma5, ma10, ma20)
-        trend_strength = _calc_trend_strength(
-            ma5=ma5,
-            ma10=ma10,
-            ma20=ma20,
-            ret_30d=ret_30d,
-            ret_90d=ret_90d,
-            ret_180d=ret_180d,
-            ret_1y=ret_1y,
-            ret_3y=ret_3y,
-            max_drawdown_pct=max_drawdown_pct,
-            rsi14=rsi14,
-            macd_hist=macd_hist,
-        )
-
-        if backtest_enabled:
-            bt = _calc_signal_backtest_metrics(
-                navs=navs,
-                forward_points=backtest_forward_points,
-                min_train_points=backtest_min_train_points,
-                neutral_band_pct=backtest_neutral_band_pct,
-            )
-        else:
-            bt = {
-                "samples": 0,
-                "direction_accuracy_pct": 0.0,
-                "bullish_win_rate_pct": 0.0,
-                "bearish_win_rate_pct": 0.0,
-                "avg_forward_return_pct": 0.0,
-                "recent_consistency": "关闭",
-            }
-
-        # 用数据点数量而非自然日计算收益（更准确，不受节假日影响）
-        return FundHistory(
+        working_df = nav_df if nav_df is not None else xa_fetch_fund_nav_history_df(code)
+        return _build_history_from_nav_df(
             code=code,
-            dates=dates[-days:],
-            navs=navs[-days:],
-            ma5=ma5,
-            ma10=ma10,
-            ma20=ma20,
-            ma60=ma60,
-            max_drawdown_pct=max_drawdown_pct,
-            ret_7d=ret_7d,
-            ret_30d=ret_30d,
-            ret_90d=ret_90d,
-            ret_180d=ret_180d,
-            ret_1y=ret_1y,
-            ret_3y=ret_3y,
-            momentum_10d=momentum_10d,
-            volatility_30d=volatility_30d,
-            downside_volatility_30d=downside_volatility_30d,
-            sharpe_30d=sharpe_30d,
-            rsi14=rsi14,
-            macd_dif=macd_dif,
-            macd_dea=macd_dea,
-            macd_hist=macd_hist,
-            trend_strength=trend_strength,
-            trend_signal=trend_signal,
-            backtest_samples=int(bt["samples"]),
-            backtest_direction_accuracy_pct=float(bt["direction_accuracy_pct"]),
-            backtest_bullish_win_rate_pct=float(bt["bullish_win_rate_pct"]),
-            backtest_bearish_win_rate_pct=float(bt["bearish_win_rate_pct"]),
-            backtest_avg_forward_return_pct=float(bt["avg_forward_return_pct"]),
-            backtest_recent_consistency=str(bt["recent_consistency"]),
+            df=working_df,
+            days=days,
+            backtest_enabled=backtest_enabled,
+            backtest_forward_points=backtest_forward_points,
+            backtest_min_train_points=backtest_min_train_points,
+            backtest_neutral_band_pct=backtest_neutral_band_pct,
         )
+    except Exception as xalpha_error:
+        logger.warning(f"[{code}] xalpha 历史净值失败: {xalpha_error}，尝试 AkShare 备用接口...")
+        try:
+            import akshare as ak
 
-    except Exception as e:
-        logger.error(f"[{code}] 获取历史净值失败: {e}")
-        return FundHistory(code=code)
+            fallback_df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+            return _build_history_from_nav_df(
+                code=code,
+                df=fallback_df,
+                days=days,
+                backtest_enabled=backtest_enabled,
+                backtest_forward_points=backtest_forward_points,
+                backtest_min_train_points=backtest_min_train_points,
+                backtest_neutral_band_pct=backtest_neutral_band_pct,
+            )
+        except Exception as fallback_error:
+            logger.error(f"[{code}] 获取历史净值失败: {fallback_error}")
+            return FundHistory(code=code)
 
 
 def _normalize_holdings(
@@ -829,8 +851,7 @@ def _call_portfolio_api(func, code: str, year: str) -> Optional[pd.DataFrame]:
     return None
 
 
-def fetch_fund_stock_holdings(code: str) -> List[dict]:
-    """获取基金前十大股票持仓（自动检索最近季报）。"""
+def _fetch_fund_stock_holdings_akshare(code: str) -> List[dict]:
     import akshare as ak
     for year in _recent_quarter_dates():
         try:
@@ -849,8 +870,25 @@ def fetch_fund_stock_holdings(code: str) -> List[dict]:
     return []
 
 
-def fetch_fund_bond_holdings(code: str) -> List[dict]:
-    """获取基金前十大债券持仓（若接口不可用则返回空）。"""
+def fetch_fund_stock_holdings(code: str) -> List[dict]:
+    """获取基金前十大股票持仓。"""
+    try:
+        df = xa_fetch_fund_stock_holdings(code)
+        holdings = _normalize_holdings(
+            df=df,
+            name_keys=["name"],
+            code_keys=["code"],
+            ratio_keys=["ratio"],
+            limit=10,
+        )
+        if holdings:
+            return holdings
+    except Exception as e:
+        logger.warning(f"[{code}] xalpha 股票持仓失败: {e}，尝试 AkShare 备用接口...")
+    return _fetch_fund_stock_holdings_akshare(code)
+
+
+def _fetch_fund_bond_holdings_akshare(code: str) -> List[dict]:
     import akshare as ak
     api_candidates = [
         "fund_portfolio_bond_hold_em",
@@ -876,8 +914,26 @@ def fetch_fund_bond_holdings(code: str) -> List[dict]:
     return []
 
 
+def fetch_fund_bond_holdings(code: str) -> List[dict]:
+    """获取基金前十大债券持仓。"""
+    try:
+        df = xa_fetch_fund_bond_holdings(code)
+        holdings = _normalize_holdings(
+            df=df,
+            name_keys=["name"],
+            code_keys=["code"],
+            ratio_keys=["ratio"],
+            limit=10,
+        )
+        if holdings:
+            return holdings
+    except Exception as e:
+        logger.warning(f"[{code}] xalpha 债券持仓失败: {e}，尝试 AkShare 备用接口...")
+    return _fetch_fund_bond_holdings_akshare(code)
+
+
 def fetch_fund_fund_holdings(code: str) -> List[dict]:
-    """获取基金前十大基金持仓（FOF/母基金，若接口不可用则返回空）。"""
+    """获取基金前十大基金持仓（FOF/母基金，xalpha 暂未兼容，保留 AkShare 回退）。"""
     import akshare as ak
     api_candidates = [
         "fund_portfolio_fund_hold_em",
@@ -903,6 +959,15 @@ def fetch_fund_fund_holdings(code: str) -> List[dict]:
     return []
 
 
+def fetch_fund_portfolio_snapshot(code: str) -> Optional[dict]:
+    """获取股/债/现金/基金大类仓位快照。"""
+    try:
+        return xa_fetch_fund_portfolio_snapshot(code)
+    except Exception as e:
+        logger.debug(f"[{code}] xalpha 仓位快照失败: {e}")
+        return None
+
+
 def fetch_fund_top_holdings(code: str) -> List[dict]:
     """兼容旧调用：返回股票持仓。"""
     return fetch_fund_stock_holdings(code)
@@ -913,27 +978,54 @@ def _sum_exposure(holdings: List[dict]) -> float:
     return round(sum(max(0.0, float(h.get("ratio", 0.0))) for h in holdings), 2)
 
 
-def fetch_latest_nav(code: str, info: FundInfo, nav_df: Optional[pd.DataFrame] = None) -> FundInfo:
-    """补充最新净值和涨跌幅，可复用已拉取的 DataFrame 避免重复请求"""
+def fetch_latest_nav(
+    code: str,
+    info: FundInfo,
+    nav_df: Optional[pd.DataFrame] = None,
+    rt_info: Optional[Dict[str, Any]] = None,
+) -> FundInfo:
+    """补充最新净值和涨跌幅，可复用已拉取的 DataFrame 避免重复请求。"""
     try:
-        import akshare as ak
-        df = nav_df if nav_df is not None else ak.fund_open_fund_info_em(
-            symbol=code, indicator="单位净值走势"
-        )
+        df = nav_df
         if df is None or df.empty:
+            rt = rt_info or xa_fetch_fund_realtime_info(code)
+            latest_nav = _to_float(rt.get("current", 0) or rt.get("estimate", 0), 0.0)
+            if latest_nav > 0:
+                info.latest_nav = latest_nav
+            cumulative_nav = _to_float(rt.get("cumulative_nav", 0), 0.0)
+            if cumulative_nav > 0:
+                info.cumulative_nav = cumulative_nav
+            latest_date = str(rt.get("time", "") or rt.get("estimate_time", "") or "")
+            if latest_date:
+                info.latest_date = latest_date[:10]
+            if rt.get("daily_change_pct") is not None:
+                info.nav_change_pct = _to_float(rt.get("daily_change_pct"), 0.0)
+            elif rt.get("estimate_change_pct") is not None:
+                info.nav_change_pct = _to_float(rt.get("estimate_change_pct"), 0.0)
             return info
 
-        df = df.sort_values("净值日期", ascending=True)
-        latest = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else None
+        date_col, nav_col, change_col = _detect_nav_columns(df)
+        working = df.copy()
+        working[date_col] = pd.to_datetime(working[date_col], errors="coerce")
+        working = working.dropna(subset=[date_col]).sort_values(date_col)
+        latest = working.iloc[-1]
+        prev = working.iloc[-2] if len(working) > 1 else None
 
-        info.latest_nav = _to_float(latest.get("单位净值", 0))
-        info.latest_date = str(latest.get("净值日期", ""))[:10]
+        info.latest_nav = _to_float(latest.get(nav_col, 0), 0.0)
+        if pd.notna(latest.get(date_col)):
+            info.latest_date = pd.to_datetime(latest.get(date_col)).strftime("%Y-%m-%d")
 
-        if "日增长率" in df.columns and latest["日增长率"] is not None:
-            info.nav_change_pct = _to_float(latest["日增长率"])
+        if "totvalue" in working.columns and latest.get("totvalue") is not None:
+            info.cumulative_nav = _to_float(latest.get("totvalue", 0), 0.0)
+        elif "累计净值" in working.columns and latest.get("累计净值") is not None:
+            info.cumulative_nav = _to_float(latest.get("累计净值", 0), 0.0)
+
+        if change_col and latest.get(change_col) is not None:
+            info.nav_change_pct = _to_float(latest.get(change_col), 0.0)
+        elif rt_info and rt_info.get("daily_change_pct") is not None:
+            info.nav_change_pct = _to_float(rt_info.get("daily_change_pct"), 0.0)
         elif prev is not None:
-            prev_nav = _to_float(prev.get("单位净值", 0))
+            prev_nav = _to_float(prev.get(nav_col, 0), 0.0)
             info.nav_change_pct = (
                 (info.latest_nav - prev_nav) / prev_nav * 100 if prev_nav else 0.0
             )
@@ -983,17 +1075,22 @@ def fetch_fund_data(
     """主入口：聚合获取单基金完整数据（历史净值只拉一次，复用填充 latest_nav）"""
     logger.info(f"[{code}] 开始获取基金数据...")
     try:
-        import akshare as ak
-        info = fetch_fund_basic_info(code)
+        rt_info: Optional[Dict[str, Any]] = None
+        try:
+            rt_info = xa_fetch_fund_realtime_info(code)
+        except Exception as e:
+            logger.warning(f"[{code}] xalpha 实时信息失败: {e}")
+
+        info = fetch_fund_basic_info(code, rt_info=rt_info)
 
         # 拉一次历史净值，同时用来填充 latest_nav（避免重复请求）
         nav_df: Optional[pd.DataFrame] = None
         try:
-            nav_df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+            nav_df = xa_fetch_fund_nav_history_df(code)
         except Exception as e:
-            logger.warning(f"[{code}] NAV 接口失败: {e}")
+            logger.warning(f"[{code}] xalpha NAV 接口失败: {e}")
 
-        info = fetch_latest_nav(code, info, nav_df=nav_df)
+        info = fetch_latest_nav(code, info, nav_df=nav_df, rt_info=rt_info)
         history = fetch_fund_nav_history(
             code,
             days=report_days,
@@ -1001,15 +1098,49 @@ def fetch_fund_data(
             backtest_forward_points=backtest_forward_points,
             backtest_min_train_points=backtest_min_train_points,
             backtest_neutral_band_pct=backtest_neutral_band_pct,
+            nav_df=nav_df,
         )
         stock_holdings = fetch_fund_stock_holdings(code)
         bond_holdings = fetch_fund_bond_holdings(code)
         fund_holdings = fetch_fund_fund_holdings(code)
-        stock_exposure = _sum_exposure(stock_holdings)
-        bond_exposure = _sum_exposure(bond_holdings)
+        portfolio = fetch_fund_portfolio_snapshot(code)
+
+        stock_exposure = (
+            _to_float(portfolio.get("stock_ratio", 0.0), 0.0)
+            if portfolio
+            else _sum_exposure(stock_holdings)
+        )
+        bond_exposure = (
+            _to_float(portfolio.get("bond_ratio", 0.0), 0.0)
+            if portfolio
+            else _sum_exposure(bond_holdings)
+        )
         fund_exposure = _sum_exposure(fund_holdings)
+
+        if portfolio:
+            portfolio_fund_ratio = _to_float(portfolio.get("fund_ratio", 0.0), 0.0)
+            if portfolio_fund_ratio > 0:
+                fund_exposure = max(fund_exposure, portfolio_fund_ratio)
+            elif fund_exposure <= 0 and _looks_like_fof(info.fund_type):
+                cash_ratio = _to_float(portfolio.get("cash_ratio", 0.0), 0.0)
+                fund_exposure = round(max(0.0, 100.0 - stock_exposure - bond_exposure - cash_ratio), 2)
+            if info.size_billion <= 0:
+                info.size_billion = _to_float(portfolio.get("assets", 0.0), 0.0)
+
         known_exposure = min(100.0, stock_exposure + bond_exposure + fund_exposure)
         other_exposure = round(max(0.0, 100.0 - known_exposure), 2)
+        if portfolio:
+            other_exposure = max(other_exposure, _to_float(portfolio.get("cash_ratio", 0.0), 0.0))
+
+        if info.latest_nav <= 0 and history.navs:
+            info.latest_nav = history.navs[-1]
+            info.latest_date = history.dates[-1] if history.dates else info.latest_date
+            if len(history.navs) > 1:
+                prev_nav = history.navs[-2]
+                info.nav_change_pct = (
+                    (info.latest_nav - prev_nav) / prev_nav * 100 if prev_nav else 0.0
+                )
+
         info = fetch_fund_rank(code, info)
 
         logger.info(

@@ -216,7 +216,7 @@ def main() -> int:
     for w in config.validate():
         logger.warning(w)
 
-    # 给数据源请求加短超时 + 快失败策略（覆盖 AkShare 底层 requests）
+    # 给数据源请求加短超时 + 快失败策略（覆盖 xalpha / AkShare 底层 requests）
     install_requests_fast_fail(
         connect_timeout=config.data_source_connect_timeout,
         read_timeout=config.data_source_read_timeout,
