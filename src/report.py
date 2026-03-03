@@ -145,6 +145,19 @@ def _build_overview_table(ranked: List[dict], include_drawdown: bool) -> str:
     return _build_text_table(headers, rows, aligns, widths)
 
 
+def _build_ranked_summary_lines(ranked: List[dict], limit: int | None = None) -> List[str]:
+    items = ranked if limit is None else ranked[:limit]
+    lines: List[str] = []
+    for x in items:
+        d = x["data"]
+        lines.append(
+            f"- {_ADVICE_EMOJI.get(x['advice'], '⚪')} {d.info.name} ({d.info.code})："
+            f"{x['advice']} | 信号分 {x['signal_score']} | 风险 {_RISK_EMOJI.get(x['risk_level'], x['risk_level'])} | "
+            f"30天 {_fmt_pct(d.history.ret_30d)} | 1年 {_fmt_pct(d.history.ret_1y)} | 趋势 {d.history.trend_signal}"
+        )
+    return lines
+
+
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
@@ -306,13 +319,27 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
         rank_text = f"同类排名 {info.rank_in_category}/{info.rank_total}（Top {info.rank_percentile:.0f}%）"
 
     lines = [
-        f"### {advice_icon} {info.name} ({info.code})",
+        f"## {advice_icon} {info.name} ({info.code})",
+        "",
+        "### 📌 核心结论",
+        "",
         (
-            f"**操作建议：{advice}** | **信号分：{signal_score}/100** | "
+            f"**{advice_icon} 操作建议：{advice}** | "
+            f"**信号分：{signal_score}/100** | "
             f"**置信度：{confidence}** | "
             f"**风险：{_RISK_EMOJI.get(risk_level, risk_level)}** | "
             f"**趋势：{trend_icon} {hist.trend_signal}**"
         ),
+        "",
+        f"> **一句话判断**：{reason or '当前暂无明确结论，请结合下方数据继续跟踪。'}",
+        "",
+        (
+            f"**📍 重点观察**：近7日 {_fmt_pct(hist.ret_7d)} | "
+            f"30天 {_fmt_pct(hist.ret_30d)} | 1年 {_fmt_pct(hist.ret_1y)} | "
+            f"最大回撤 {hist.max_drawdown_pct:.2f}%"
+        ),
+        "",
+        "### 📊 基础画像",
         "",
         f"- 净值：**{info.latest_nav:.4f}** ({_fmt_pct(info.nav_change_pct)}) | 更新：{info.latest_date or 'N/A'}",
         f"- 类型：{info.fund_type} | 经理：{mgr_text}",
@@ -323,6 +350,9 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
         lines.append(f"- {rank_text}")
     lines += [
         f"- 收益：近7日 {_fmt_pct(hist.ret_7d)} | {_fmt_lookback_returns(hist)}",
+        "",
+        "### 🧪 量化信号",
+        "",
         f"- 最大回撤：{hist.max_drawdown_pct:.2f}% | {ma_text}",
         (
             f"- 深度指标：趋势强度 {hist.trend_strength}/100 | 波动 {hist.volatility_30d:.2f}% | "
@@ -343,15 +373,19 @@ def _single_fund_block(data: FundAnalysisData, analysis: dict, signal_score: int
             f"- 资产暴露（前十大披露）：股票 {data.stock_exposure_pct:.1f}% | 债券 {data.bond_exposure_pct:.1f}% | "
             f"基金 {data.fund_exposure_pct:.1f}% | 其他 {data.other_exposure_pct:.1f}%"
         ),
+        "",
+        "### 🧾 持仓审查",
     ]
 
     lines.append("")
-    lines.append("**三类持仓审查（股票 / 债券 / 基金）**")
     _append_holdings(lines, "股票持仓", data.top_stock_holdings, limit=3)
     _append_holdings(lines, "债券持仓", data.top_bond_holdings, limit=3)
     _append_holdings(lines, "基金持仓", data.top_fund_holdings, limit=3)
 
     lines += [
+        "",
+        "### ⚠️ 风险与结论",
+        "",
         f"- 持仓结论：{portfolio_review or '持仓结构无异常结论'}",
         f"- 回测结论：{backtest_review or '回测结论暂不可用'}",
     ]
@@ -473,28 +507,24 @@ def _generate_full_report(
         header += ["---", ""]
 
     header += [
-        "## 📊 操作建议汇总",
+        "## 📊 分析结果摘要",
         "",
-        "| 指标 | 数值 |",
-        "|------|------|",
-        f"| 🟢 建议加仓 | **{advice_count.get('加仓', 0)}** 只 |",
-        f"| 🔵 建议持有 | **{advice_count.get('持有', 0)}** 只 |",
-        f"| 🔴 建议减仓 | **{advice_count.get('减仓', 0)}** 只 |",
-        f"| 🟡 建议观望 | **{advice_count.get('观望', 0)}** 只 |",
-        f"| 📈 平均近30日收益 | **{avg_ret30:+.2f}%** |",
-        f"| 📈 平均近90日收益 | **{avg_ret90:+.2f}%** |",
-        f"| 📈 平均近180日收益 | **{avg_ret180:+.2f}%** |",
-        f"| 📈 平均近1年收益 | **{avg_ret1y:+.2f}%** |",
-        f"| 📈 平均近3年收益 | **{avg_ret3y:+.2f}%** |",
+        f"- 🟢 建议加仓：**{advice_count.get('加仓', 0)}** 只",
+        f"- 🔵 建议持有：**{advice_count.get('持有', 0)}** 只",
+        f"- 🔴 建议减仓：**{advice_count.get('减仓', 0)}** 只",
+        f"- 🟡 建议观望：**{advice_count.get('观望', 0)}** 只",
+        f"- 📈 平均近30日收益：**{avg_ret30:+.2f}%**",
+        f"- 📈 平均近90日收益：**{avg_ret90:+.2f}%**",
+        f"- 📈 平均近180日收益：**{avg_ret180:+.2f}%**",
+        f"- 📈 平均近1年收益：**{avg_ret1y:+.2f}%**",
+        f"- 📈 平均近3年收益：**{avg_ret3y:+.2f}%**",
         "",
         "---",
         "",
         "## 🧪 数据质量",
         "",
-        "| 指标 | 数值 |",
-        "|------|------|",
-        f"| ✅ 数据完整基金 | **{complete_count}** 只 |",
-        f"| ⚠️ 数据缺失基金 | **{len(incomplete)}** 只 |",
+        f"- ✅ 数据完整基金：**{complete_count}** 只",
+        f"- ⚠️ 数据缺失基金：**{len(incomplete)}** 只",
         "",
     ]
 
@@ -545,10 +575,10 @@ def _generate_full_report(
     header += [
         "---",
         "",
-        "## 🧭 快速总览",
+        "## 🧭 基金清单（按信号分）",
         "",
     ]
-    header.append(_build_overview_table(ranked, include_drawdown=True))
+    header.extend(_build_ranked_summary_lines(ranked))
 
     header += [
         "",
@@ -559,26 +589,20 @@ def _generate_full_report(
     ]
 
     blocks = []
-    for advice in _ADVICE_ORDER:
-        group = [x for x in ranked if x["advice"] == advice]
-        if not group:
-            continue
-        blocks.append(f"### {_ADVICE_EMOJI.get(advice, '⚪')} {advice}（{len(group)}只）")
-        blocks.append("")
-        for x in group:
-            blocks.append(
-                _single_fund_block(
-                    x["data"],
-                    x["analysis"],
-                    signal_score=x["signal_score"],
-                    risk_level=x["risk_level"],
-                )
+    for x in ranked:
+        blocks.append(
+            _single_fund_block(
+                x["data"],
+                x["analysis"],
+                signal_score=x["signal_score"],
+                risk_level=x["risk_level"],
             )
+        )
 
     footer = [
         "",
         "> ⚠️ 本报告由程序自动生成，仅供参考，不构成投资建议。",
-        "> 数据来源：东方财富（akshare），AI 分析：Gemini / OpenAI",
+        "> 数据来源：xalpha 项目接口（天天基金/东方财富）+ AkShare 补充，AI 分析：Gemini / OpenAI",
         "> 报告结构参考：https://github.com/hayashishungenn/daily_stock_analysis",
     ]
 
@@ -612,7 +636,7 @@ def _generate_simple_report(
         "",
         f"> 模式：**simple** | 共分析 **{len(results)}** 只基金 | 回看周期：{report_days} 天 | 生成时间：{time_str}",
         "",
-        "## 📊 建议汇总",
+        "## 📊 分析结果摘要",
         "",
         f"- 🟢 加仓：**{advice_count.get('加仓', 0)}** 只",
         f"- 🔵 持有：**{advice_count.get('持有', 0)}** 只",
@@ -656,7 +680,7 @@ def _generate_simple_report(
         "## 🧾 基金清单（按信号分）",
         "",
     ]
-    lines.append(_build_overview_table(ranked, include_drawdown=False))
+    lines.extend(_build_ranked_summary_lines(ranked))
 
     lines += [
         "",
@@ -693,19 +717,17 @@ def _generate_summary_report(
         "",
         f"> 模式：**summary** | 共分析 **{len(results)}** 只基金 | 回看周期：{report_days} 天 | 生成时间：{time_str}",
         "",
-        "## 📊 建议总览",
+        "## 📊 分析结果摘要",
         "",
-        "| 指标 | 数值 |",
-        "|------|------|",
-        f"| 🟢 加仓 | **{advice_count.get('加仓', 0)}** 只 |",
-        f"| 🔵 持有 | **{advice_count.get('持有', 0)}** 只 |",
-        f"| 🔴 减仓 | **{advice_count.get('减仓', 0)}** 只 |",
-        f"| 🟡 观望 | **{advice_count.get('观望', 0)}** 只 |",
-        f"| 📈 平均近30日收益 | **{avg_ret30:+.2f}%** |",
-        f"| 📈 平均近90日收益 | **{avg_ret90:+.2f}%** |",
-        f"| 📈 平均近180日收益 | **{avg_ret180:+.2f}%** |",
-        f"| 📈 平均近1年收益 | **{avg_ret1y:+.2f}%** |",
-        f"| 📈 平均近3年收益 | **{avg_ret3y:+.2f}%** |",
+        f"- 🟢 加仓：**{advice_count.get('加仓', 0)}** 只",
+        f"- 🔵 持有：**{advice_count.get('持有', 0)}** 只",
+        f"- 🔴 减仓：**{advice_count.get('减仓', 0)}** 只",
+        f"- 🟡 观望：**{advice_count.get('观望', 0)}** 只",
+        f"- 📈 平均近30日收益：**{avg_ret30:+.2f}%**",
+        f"- 📈 平均近90日收益：**{avg_ret90:+.2f}%**",
+        f"- 📈 平均近180日收益：**{avg_ret180:+.2f}%**",
+        f"- 📈 平均近1年收益：**{avg_ret1y:+.2f}%**",
+        f"- 📈 平均近3年收益：**{avg_ret3y:+.2f}%**",
         "",
         "## 🎯 优先关注（Top 5）",
         "",
@@ -742,7 +764,7 @@ def _generate_summary_report(
         "## 🧾 汇总清单（按信号分）",
         "",
     ]
-    lines.append(_build_overview_table(ranked, include_drawdown=False))
+    lines.extend(_build_ranked_summary_lines(ranked))
 
     lines += [
         "",

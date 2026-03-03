@@ -46,22 +46,23 @@ def _get_smtp_config(sender: str):
 def _md_to_html(md: str) -> str:
     """Markdown -> HTML 转换（邮件专用）"""
     css_style = """
-        body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.3; color: #24292e; font-size: 14px; padding: 14px; max-width: 960px; margin: 0 auto; }
-        h1 { font-size: 20px; border-bottom: 1px solid #eaecef; padding-bottom: 0.2em; color: #0366d6; margin: 0 0 8px 0; }
-        h2 { font-size: 17px; border-bottom: 1px solid #eaecef; padding-bottom: 0.2em; margin: 12px 0 6px 0; }
-        h3 { font-size: 15px; margin: 10px 0 4px 0; }
-        p { margin: 0 0 3px 0; }
-        table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
-        th, td { border: 1px solid #dfe2e5; padding: 3px 5px; text-align: left; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.65; color: #24292e; font-size: 16px; padding: 20px; max-width: 1040px; margin: 0 auto; }
+        h1 { font-size: 24px; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; color: #0366d6; margin: 0 0 12px 0; }
+        h2 { font-size: 20px; border-bottom: 1px solid #eaecef; padding-bottom: 0.25em; margin: 18px 0 10px 0; }
+        h3 { font-size: 18px; margin: 14px 0 8px 0; }
+        h4 { font-size: 16px; margin: 12px 0 6px 0; }
+        p { margin: 0 0 8px 0; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+        th, td { border: 1px solid #dfe2e5; padding: 6px 10px; text-align: left; }
         th { background-color: #f6f8fa; font-weight: 600; }
-        ul, ol { padding-left: 18px; margin: 3px 0 5px 0; }
-        li { margin: 1px 0; }
-        hr { height: 0.2em; margin: 10px 0; background-color: #e1e4e8; border: 0; }
+        ul, ol { padding-left: 22px; margin: 6px 0 10px 0; }
+        li { margin: 3px 0; }
+        hr { height: 0.2em; margin: 14px 0; background-color: #e1e4e8; border: 0; }
         code { padding: 0.2em 0.4em; background-color: rgba(27,31,35,0.05); border-radius: 3px; }
-        pre { margin: 6px 0; padding: 8px 10px; background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 4px; line-height: 1.2; font-size: 12px; overflow-x: auto; white-space: pre; }
-        blockquote { color: #6a737d; border-left: 0.25em solid #dfe2e5; padding: 0 1em; margin: 4px 0; }
+        pre { margin: 10px 0; padding: 10px 12px; background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 4px; line-height: 1.45; font-size: 14px; overflow-x: auto; white-space: pre-wrap; }
+        blockquote { color: #4b5563; border-left: 0.25em solid #dfe2e5; padding: 0 1em; margin: 8px 0; }
         table.text-grid { width: auto; table-layout: auto; }
-        table.text-grid th, table.text-grid td { font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; white-space: nowrap; }
+        table.text-grid th, table.text-grid td { font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; white-space: nowrap; font-size: 13px; }
         table.text-grid th.align-right, table.text-grid td.align-right { text-align: right; }
         table.text-grid th.align-left, table.text-grid td.align-left { text-align: left; }
     """
@@ -218,7 +219,7 @@ def _md_to_html(md: str) -> str:
             if m:
                 _flush_paragraph()
                 _flush_list()
-                level = min(len(m.group(1)), 3)
+                level = min(len(m.group(1)), 4)
                 html_parts.append(f"<h{level}>{_format_inline_md(m.group(2))}</h{level}>")
                 i += 1
                 continue
@@ -315,7 +316,7 @@ def _md_to_telegram_html(md: str) -> str:
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
-    text = re.sub(r"^#{1,3} (.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    text = re.sub(r"^#{1,4} (.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
     for i, block in enumerate(code_blocks):
         text = text.replace(f"@@CODEBLOCK_{i}@@", f"<pre>{block}</pre>")
     return text
