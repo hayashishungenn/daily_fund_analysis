@@ -44,6 +44,7 @@ class Config:
     # Telegram
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
+    telegram_message_thread_id: Optional[str] = None
 
     # 邮件
     email_sender: Optional[str] = None
@@ -55,9 +56,14 @@ class Config:
 
     # PushPlus（微信推送）
     pushplus_token: Optional[str] = None
+    pushplus_topic: Optional[str] = None
 
     # 企业微信 Webhook
     wecom_webhook: Optional[str] = None
+
+    # Markdown 转图片（可选）
+    markdown_to_image_channels: List[str] = field(default_factory=list)
+    markdown_to_image_max_chars: int = 15000
 
     # 系统
     log_dir: str = "./logs"
@@ -84,7 +90,12 @@ class Config:
         return bool(self.email_sender and self.email_password)
 
     def has_notification(self) -> bool:
-        return self.has_telegram() or self.has_email()
+        return bool(
+            self.has_telegram()
+            or self.has_email()
+            or self.pushplus_token
+            or self.wecom_webhook
+        )
 
     def validate(self) -> List[str]:
         warnings = []
@@ -108,6 +119,15 @@ class Config:
             warnings.append("⚠️  数据源超时配置非法，已自动回退为默认值")
         if self.data_source_max_retries < 0:
             warnings.append("⚠️  DATA_SOURCE_MAX_RETRIES 不能为负数，已自动回退为 0")
+        unsupported_image_channels = [
+            ch for ch in self.markdown_to_image_channels
+            if ch not in {"telegram", "email", "wecom"}
+        ]
+        if unsupported_image_channels:
+            warnings.append(
+                "⚠️  MARKDOWN_TO_IMAGE_CHANNELS 包含暂不支持的渠道："
+                + ",".join(unsupported_image_channels)
+            )
         return warnings
 
 
@@ -135,6 +155,7 @@ def get_config() -> Config:
 
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
+        telegram_message_thread_id=os.getenv("TELEGRAM_MESSAGE_THREAD_ID") or None,
 
         email_sender=os.getenv("EMAIL_SENDER") or None,
         email_password=os.getenv("EMAIL_PASSWORD") or None,
@@ -144,7 +165,16 @@ def get_config() -> Config:
         email_dedup_window_minutes=int(os.getenv("EMAIL_DEDUP_WINDOW_MINUTES", "180")),
 
         pushplus_token=os.getenv("PUSHPLUS_TOKEN") or None,
+        pushplus_topic=os.getenv("PUSHPLUS_TOPIC") or None,
         wecom_webhook=os.getenv("WECOM_WEBHOOK") or None,
+        markdown_to_image_channels=[
+            ch.strip().lower()
+            for ch in os.getenv("MARKDOWN_TO_IMAGE_CHANNELS", "").split(",")
+            if ch.strip()
+        ],
+        markdown_to_image_max_chars=max(
+            1000, int(os.getenv("MARKDOWN_TO_IMAGE_MAX_CHARS", "15000"))
+        ),
 
         log_dir=os.getenv("LOG_DIR", "./logs"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),

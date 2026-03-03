@@ -11,6 +11,7 @@ openai>=1.0.0
 # 通知
 python-telegram-bot>=20.0
 markdown2>=2.4.0
+imgkit>=1.2.3
 
 # 调度
 schedule>=1.2.0

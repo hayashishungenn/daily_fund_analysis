@@ -4,6 +4,8 @@
 
 - Telegram Bot
 - 邮件（QQ/163/Gmail/Outlook 等 SMTP）
+- PushPlus
+- 企业微信机器人
 
 这是一个**基金每日分析报告**项目，报告结构参考  
 [hayashishungenn/daily_stock_analysis](https://github.com/hayashishungenn/daily_stock_analysis)，支持：
@@ -186,6 +188,27 @@ EMAIL_DEDUP_WINDOW_MINUTES=180
 
 - `EMAIL_DEDUP_ENABLED=true`：开启邮件去重
 - `EMAIL_DEDUP_WINDOW_MINUTES=180`：180 分钟内同内容不重复发送
+
+### PushPlus / 企业微信 / Markdown 转图片（可选）
+
+```env
+PUSHPLUS_TOKEN=your_pushplus_token
+PUSHPLUS_TOPIC=your_pushplus_topic
+WECOM_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx
+
+TELEGRAM_MESSAGE_THREAD_ID=
+MARKDOWN_TO_IMAGE_CHANNELS=telegram,email,wecom
+MARKDOWN_TO_IMAGE_MAX_CHARS=15000
+```
+
+说明：
+
+- `PUSHPLUS_TOPIC`：配置后会推送到 PushPlus 群组订阅者
+- `TELEGRAM_MESSAGE_THREAD_ID`：将消息发到 Telegram 群组的指定话题
+- `MARKDOWN_TO_IMAGE_CHANNELS`：对指定渠道优先发送图片版报告，失败会自动回退为文本
+- `MARKDOWN_TO_IMAGE_MAX_CHARS`：报告过长时跳过图片渲染，避免超大图片
+
+如果要启用 Markdown 转图片，还需要安装系统依赖 `wkhtmltoimage`（或 `wkhtmltopdf` 套件内自带的 `wkhtmltoimage`）。
 
 ### 系统配置（一般默认即可）
 

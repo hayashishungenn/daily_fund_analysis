@@ -2,6 +2,7 @@
 """
 通知服务 - Telegram Bot + 邮件（SMTP）+ PushPlus + 企业微信 Webhook
 """
+import base64
 import hashlib
 import html as _html
 import json
@@ -11,6 +12,7 @@ import smtplib
 import ssl
 import time
 from email.header import Header
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -21,6 +23,8 @@ from src.config import Config
 from src.report import split_message
 
 logger = logging.getLogger(__name__)
+_SUPPORTED_IMAGE_CHANNELS = {"telegram", "email", "wecom"}
+_WECOM_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 
 # SMTP 服务器自动识别表
 _SMTP_SERVERS = {
@@ -41,6 +45,114 @@ _DEFAULT_SMTP = ("smtp.qq.com", 465, True)
 def _get_smtp_config(sender: str):
     domain = sender.split("@")[-1].lower()
     return _SMTP_SERVERS.get(domain, _DEFAULT_SMTP)
+
+
+def _render_inline_html(text: str) -> str:
+    placeholders = []
+
+    def _save_link(match: re.Match) -> str:
+        placeholders.append((match.group(1), match.group(2)))
+        return f"@@LINK_{len(placeholders) - 1}@@"
+
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _save_link, text)
+    s = _html.escape(s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+
+    for idx, (label, url) in enumerate(placeholders):
+        safe_label = _html.escape(label)
+        safe_url = _html.escape(url, quote=True)
+        s = s.replace(f"@@LINK_{idx}@@", f'<a href="{safe_url}">{safe_label}</a>')
+    return s
+
+
+def _truncate_to_bytes(text: str, max_bytes: int) -> str:
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    acc: List[str] = []
+    used = 0
+    for ch in text:
+        ch_bytes = len(ch.encode("utf-8"))
+        if used + ch_bytes > max_bytes:
+            break
+        acc.append(ch)
+        used += ch_bytes
+    return "".join(acc)
+
+
+def _split_text_by_bytes(text: str, max_bytes: int, reserve_bytes: int = 64) -> List[str]:
+    effective_limit = max(256, max_bytes - reserve_bytes)
+    if len(text.encode("utf-8")) <= effective_limit:
+        return [text]
+
+    chunks: List[str] = []
+    current: List[str] = []
+    current_bytes = 0
+
+    for line in text.splitlines():
+        line_text = line + "\n"
+        line_bytes = len(line_text.encode("utf-8"))
+        if line_bytes > effective_limit:
+            truncated = _truncate_to_bytes(line, effective_limit - 48) + "\n...(本段内容过长已截断)\n"
+            if current:
+                chunks.append("".join(current).rstrip())
+                current = []
+                current_bytes = 0
+            chunks.append(truncated.rstrip())
+            continue
+        if current_bytes + line_bytes > effective_limit and current:
+            chunks.append("".join(current).rstrip())
+            current = [line_text]
+            current_bytes = line_bytes
+        else:
+            current.append(line_text)
+            current_bytes += line_bytes
+
+    if current:
+        chunks.append("".join(current).rstrip())
+
+    return chunks or [_truncate_to_bytes(text, effective_limit)]
+
+
+def _channel_wants_image(config: Config, channel: str) -> bool:
+    return channel.lower() in {
+        ch for ch in config.markdown_to_image_channels if ch in _SUPPORTED_IMAGE_CHANNELS
+    }
+
+
+def _markdown_to_image(markdown_text: str, max_chars: int) -> Optional[bytes]:
+    if len(markdown_text) > max_chars:
+        logger.warning(
+            "Markdown 内容过长（%d 字符），跳过转图片",
+            len(markdown_text),
+        )
+        return None
+
+    try:
+        import imgkit
+    except ImportError:
+        logger.warning("未安装 imgkit，无法启用 Markdown 转图片，将回退为文本推送")
+        return None
+
+    try:
+        html = _md_to_html(markdown_text)
+        options = {
+            "format": "png",
+            "encoding": "UTF-8",
+            "quiet": "",
+        }
+        output = imgkit.from_string(html, False, options=options)
+        if output and isinstance(output, bytes):
+            return output
+        logger.warning("Markdown 转图片返回空结果，将回退为文本推送")
+        return None
+    except OSError as exc:
+        logger.warning("wkhtmltoimage 不可用，Markdown 转图片回退为文本：%s", exc)
+        return None
+    except Exception as exc:
+        logger.warning("Markdown 转图片失败，回退为文本：%s", exc)
+        return None
 
 
 def _md_to_html(md: str) -> str:
@@ -68,11 +180,7 @@ def _md_to_html(md: str) -> str:
     """
 
     def _format_inline_md(text: str) -> str:
-        s = _html.escape(text)
-        s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-        s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
-        s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
-        return s
+        return _render_inline_html(text)
 
     def _looks_like_text_table(code_lines: List[str]) -> bool:
         if len(code_lines) < 2:
@@ -305,27 +413,64 @@ def _save_email_state(state_file: Path, fingerprint: str) -> None:
 
 def _md_to_telegram_html(md: str) -> str:
     """将 Markdown 转换为 Telegram HTML（避免特殊字符报错）"""
-    text = _html.escape(md)             # 先转义 < > &
+    text = md
     code_blocks: List[str] = []
+    links: List[tuple[str, str]] = []
 
     def _capture_code_block(match: re.Match) -> str:
         code_blocks.append(match.group(1).strip("\n"))
         return f"@@CODEBLOCK_{len(code_blocks) - 1}@@"
 
+    def _capture_link(match: re.Match) -> str:
+        links.append((match.group(1), match.group(2)))
+        return f"@@LINK_{len(links) - 1}@@"
+
     text = re.sub(r"```(?:[a-zA-Z0-9_+-]+)?\n(.*?)```", _capture_code_block, text, flags=re.S)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _capture_link, text)
+    text = _html.escape(text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     text = re.sub(r"^#{1,4} (.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    for i, (label, url) in enumerate(links):
+        safe_label = _html.escape(label)
+        safe_url = _html.escape(url, quote=True)
+        text = text.replace(f"@@LINK_{i}@@", f'<a href="{safe_url}">{safe_label}</a>')
     for i, block in enumerate(code_blocks):
-        text = text.replace(f"@@CODEBLOCK_{i}@@", f"<pre>{block}</pre>")
+        text = text.replace(f"@@CODEBLOCK_{i}@@", f"<pre>{_html.escape(block)}</pre>")
     return text
 
 
-def send_telegram(content: str, config: Config) -> bool:
+def _send_telegram_image(config: Config, image_bytes: bytes) -> bool:
+    if not config.has_telegram():
+        return False
+
+    import requests
+
+    try:
+        api_url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendPhoto"
+        data = {"chat_id": config.telegram_chat_id}
+        if config.telegram_message_thread_id:
+            data["message_thread_id"] = config.telegram_message_thread_id
+        files = {"photo": ("report.png", image_bytes, "image/png")}
+        resp = requests.post(api_url, data=data, files=files, timeout=30)
+        if resp.status_code == 200 and resp.json().get("ok"):
+            logger.info("✅ Telegram 图片发送成功")
+            return True
+        logger.error(f"❌ Telegram 图片发送失败: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Telegram 图片发送异常: {e}")
+        return False
+
+
+def send_telegram(content: str, config: Config, image_bytes: Optional[bytes] = None) -> bool:
     """发送 Telegram 消息（HTML 模式，自动分割长消息，避免 Markdown 特殊字符崩溃）"""
     if not config.has_telegram():
         return False
+
+    if image_bytes is not None and _send_telegram_image(config, image_bytes):
+        return True
 
     try:
         import asyncio
@@ -338,18 +483,21 @@ def send_telegram(content: str, config: Config) -> bool:
             bot = Bot(token=config.telegram_bot_token)
             parts = split_message(html_content, max_len=4000)
             for i, part in enumerate(parts):
+                send_kwargs = {
+                    "chat_id": config.telegram_chat_id,
+                    "text": part,
+                    "disable_web_page_preview": True,
+                }
+                if config.telegram_message_thread_id:
+                    send_kwargs["message_thread_id"] = config.telegram_message_thread_id
                 try:
                     await bot.send_message(
-                        chat_id=config.telegram_chat_id,
-                        text=part,
                         parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True,
+                        **send_kwargs,
                     )
                 except Exception:
                     await bot.send_message(
-                        chat_id=config.telegram_chat_id,
-                        text=part,
-                        disable_web_page_preview=True,
+                        **send_kwargs,
                     )
                 if i < len(parts) - 1:
                     import asyncio as _a
@@ -368,7 +516,49 @@ def send_telegram(content: str, config: Config) -> bool:
 # 邮件
 # ---------------------------------------------------------------------------
 
-def send_email(content: str, config: Config, subject: Optional[str] = None) -> bool:
+def _build_email_message(
+    content: str,
+    config: Config,
+    subject: str,
+    receivers: List[str],
+    image_bytes: Optional[bytes] = None,
+) -> MIMEMultipart:
+    sender_name = str(Header(config.email_sender_name, "utf-8"))
+    if image_bytes is not None:
+        msg = MIMEMultipart("related")
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText("基金分析报告已生成，请查看下方图片。", "plain", "utf-8"))
+        alt.attach(
+            MIMEText(
+                '<p>基金分析报告已生成，请查看下方图片：</p>'
+                '<p><img src="cid:fund-report-image" alt="基金分析报告" style="max-width:100%;" /></p>',
+                "html",
+                "utf-8",
+            )
+        )
+        msg.attach(alt)
+
+        img_part = MIMEImage(image_bytes, _subtype="png")
+        img_part.add_header("Content-Disposition", "inline", filename="fund_report.png")
+        img_part.add_header("Content-ID", "<fund-report-image>")
+        msg.attach(img_part)
+    else:
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText("基金分析报告已生成，请查看 HTML 正文。", "plain", "utf-8"))
+        msg.attach(MIMEText(_md_to_html(content), "html", "utf-8"))
+
+    msg["From"] = formataddr((sender_name, config.email_sender))
+    msg["To"] = ", ".join(receivers)
+    msg["Subject"] = str(Header(subject, "utf-8"))
+    return msg
+
+
+def send_email(
+    content: str,
+    config: Config,
+    subject: Optional[str] = None,
+    image_bytes: Optional[bytes] = None,
+) -> bool:
     """发送 HTML 邮件"""
     if not config.has_email():
         return False
@@ -393,14 +583,7 @@ def send_email(content: str, config: Config, subject: Optional[str] = None) -> b
         )
         return True
 
-    msg = MIMEMultipart("alternative")
-    sender_name = str(Header(config.email_sender_name, "utf-8"))
-    msg["From"] = formataddr((sender_name, config.email_sender))
-    msg["To"] = ", ".join(receivers)
-    msg["Subject"] = str(Header(subject, "utf-8"))
-
-    msg.attach(MIMEText("基金分析报告已生成，请查看 HTML 正文。", "plain", "utf-8"))
-    msg.attach(MIMEText(_md_to_html(content), "html", "utf-8"))
+    msg = _build_email_message(content, config, subject, receivers, image_bytes=image_bytes)
 
     try:
         if use_ssl:
@@ -417,7 +600,10 @@ def send_email(content: str, config: Config, subject: Optional[str] = None) -> b
 
         if config.email_dedup_enabled:
             _save_email_state(state_file, fingerprint)
-        logger.info(f"✅ 邮件发送成功 -> {receivers}")
+        if image_bytes is not None:
+            logger.info(f"✅ 邮件图片发送成功 -> {receivers}")
+        else:
+            logger.info(f"✅ 邮件发送成功 -> {receivers}")
         return True
 
     except Exception as e:
@@ -444,6 +630,7 @@ def send_pushplus(content: str, config: Config) -> bool:
                 "title": f"📊 基金每日分析报告 {date_str}",
                 "content": content,
                 "template": "markdown",
+                **({"topic": config.pushplus_topic} if config.pushplus_topic else {}),
             },
             timeout=15,
         )
@@ -462,23 +649,66 @@ def send_pushplus(content: str, config: Config) -> bool:
 # 企业微信 WeCom Webhook
 # ---------------------------------------------------------------------------
 
-def send_wecom(content: str, config: Config) -> bool:
+def _send_wecom_markdown(content: str, config: Config) -> bool:
+    import requests
+
+    resp = requests.post(
+        config.wecom_webhook,
+        json={"msgtype": "markdown", "markdown": {"content": content}},
+        timeout=15,
+    )
+    data = resp.json()
+    if data.get("errcode") == 0:
+        return True
+    logger.error(f"❌ 企业微信失败: {data}")
+    return False
+
+
+def _send_wecom_image(config: Config, image_bytes: bytes) -> bool:
+    if len(image_bytes) > _WECOM_IMAGE_MAX_BYTES:
+        logger.warning("企业微信图片超过 2MB 限制，回退为文本发送")
+        return False
+
+    import requests
+
+    try:
+        payload = {
+            "msgtype": "image",
+            "image": {
+                "base64": base64.b64encode(image_bytes).decode("ascii"),
+                "md5": hashlib.md5(image_bytes).hexdigest(),
+            },
+        }
+        resp = requests.post(config.wecom_webhook, json=payload, timeout=30)
+        data = resp.json()
+        if data.get("errcode") == 0:
+            logger.info("✅ 企业微信图片发送成功")
+            return True
+        logger.error(f"❌ 企业微信图片失败: {data}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ 企业微信图片异常: {e}")
+        return False
+
+
+def send_wecom(content: str, config: Config, image_bytes: Optional[bytes] = None) -> bool:
     """企业微信机器人 Webhook 推送（支持 Markdown）"""
     if not config.wecom_webhook:
         return False
-    import requests
+    if image_bytes is not None and _send_wecom_image(config, image_bytes):
+        return True
+
     try:
-        resp = requests.post(
-            config.wecom_webhook,
-            json={"msgtype": "markdown", "markdown": {"content": content[:4096]}},
-            timeout=15,
-        )
-        data = resp.json()
-        if data.get("errcode") == 0:
-            logger.info("✅ 企业微信发送成功")
-            return True
-        logger.error(f"❌ 企业微信失败: {data}")
-        return False
+        chunks = _split_text_by_bytes(content, max_bytes=4000)
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, 1):
+            page_marker = f"\n\n📄 ({idx}/{total})" if total > 1 else ""
+            if not _send_wecom_markdown(chunk + page_marker, config):
+                return False
+            if idx < total:
+                time.sleep(1.2)
+        logger.info("✅ 企业微信发送成功")
+        return True
     except Exception as e:
         logger.error(f"❌ 企业微信异常: {e}")
         return False
@@ -496,14 +726,22 @@ def send_report(content: str, config: Config) -> dict:
         {"telegram": bool, "email": bool, "pushplus": bool, "wecom": bool}
     """
     results = {}
+    requested_image_channels = [
+        ch for ch in config.markdown_to_image_channels if ch in _SUPPORTED_IMAGE_CHANNELS
+    ]
+    image_bytes: Optional[bytes] = None
+    if requested_image_channels:
+        image_bytes = _markdown_to_image(content, config.markdown_to_image_max_chars)
 
     if config.has_telegram():
-        results["telegram"] = send_telegram(content, config)
+        tg_image = image_bytes if _channel_wants_image(config, "telegram") else None
+        results["telegram"] = send_telegram(content, config, image_bytes=tg_image)
     else:
         logger.info("Telegram 未配置，跳过")
 
     if config.has_email():
-        results["email"] = send_email(content, config)
+        email_image = image_bytes if _channel_wants_image(config, "email") else None
+        results["email"] = send_email(content, config, image_bytes=email_image)
     else:
         logger.info("邮件未配置，跳过")
 
@@ -513,7 +751,8 @@ def send_report(content: str, config: Config) -> dict:
         logger.info("PushPlus 未配置，跳过")
 
     if config.wecom_webhook:
-        results["wecom"] = send_wecom(content, config)
+        wecom_image = image_bytes if _channel_wants_image(config, "wecom") else None
+        results["wecom"] = send_wecom(content, config, image_bytes=wecom_image)
     else:
         logger.info("企业微信未配置，跳过")
 
