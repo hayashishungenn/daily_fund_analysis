@@ -282,7 +282,7 @@ def _calc_trend_strength(
 
 
 def _infer_direction_from_past_navs(past_navs: List[float]) -> str:
-    """Infer expected direction from historical NAVs only: up/down/flat."""
+    """仅基于历史净值推断方向：上涨 / 下跌 / 震荡。"""
     if len(past_navs) < 20:
         return "flat"
 

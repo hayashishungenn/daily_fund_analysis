@@ -47,7 +47,7 @@ def _get_smtp_config(sender: str):
     return _SMTP_SERVERS.get(domain, _DEFAULT_SMTP)
 
 
-def _render_inline_html(text: str) -> str:
+def _render_email_inline_html(text: str) -> str:
     placeholders = []
 
     def _save_link(match: re.Match) -> str:
@@ -81,7 +81,7 @@ def _truncate_to_bytes(text: str, max_bytes: int) -> str:
     return "".join(acc)
 
 
-def _split_text_by_bytes(text: str, max_bytes: int, reserve_bytes: int = 64) -> List[str]:
+def _split_wecom_message(text: str, max_bytes: int, reserve_bytes: int = 64) -> List[str]:
     effective_limit = max(256, max_bytes - reserve_bytes)
     if len(text.encode("utf-8")) <= effective_limit:
         return [text]
@@ -115,13 +115,13 @@ def _split_text_by_bytes(text: str, max_bytes: int, reserve_bytes: int = 64) -> 
     return chunks or [_truncate_to_bytes(text, effective_limit)]
 
 
-def _channel_wants_image(config: Config, channel: str) -> bool:
+def _channel_uses_report_image(config: Config, channel: str) -> bool:
     return channel.lower() in {
         ch for ch in config.markdown_to_image_channels if ch in _SUPPORTED_IMAGE_CHANNELS
     }
 
 
-def _markdown_to_image(markdown_text: str, max_chars: int) -> Optional[bytes]:
+def _render_report_image(markdown_text: str, max_chars: int) -> Optional[bytes]:
     if len(markdown_text) > max_chars:
         logger.warning(
             "Markdown 内容过长（%d 字符），跳过转图片",
@@ -156,7 +156,7 @@ def _markdown_to_image(markdown_text: str, max_chars: int) -> Optional[bytes]:
 
 
 def _md_to_html(md: str) -> str:
-    """Markdown -> HTML 转换（邮件专用）"""
+    """渲染邮件 HTML。"""
     css_style = """
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.65; color: #24292e; font-size: 16px; padding: 20px; max-width: 1040px; margin: 0 auto; }
         h1 { font-size: 24px; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; color: #0366d6; margin: 0 0 12px 0; }
@@ -180,7 +180,7 @@ def _md_to_html(md: str) -> str:
     """
 
     def _format_inline_md(text: str) -> str:
-        return _render_inline_html(text)
+        return _render_email_inline_html(text)
 
     def _looks_like_text_table(code_lines: List[str]) -> bool:
         if len(code_lines) < 2:
@@ -241,7 +241,7 @@ def _md_to_html(md: str) -> str:
         table_html.append("</tbody></table>")
         return "".join(table_html)
 
-    def _render_markdown_fallback(markdown_text: str) -> str:
+    def _render_email_markdown(markdown_text: str) -> str:
         lines = markdown_text.splitlines()
         html_parts: List[str] = []
         paragraph: List[str] = []
@@ -353,7 +353,7 @@ def _md_to_html(md: str) -> str:
         return "".join(html_parts)
 
     # 邮件正文采用固定渲染器，避免不同环境下 fenced code / table 的输出不一致。
-    html_body = _render_markdown_fallback(md)
+    html_body = _render_email_markdown(md)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -699,7 +699,7 @@ def send_wecom(content: str, config: Config, image_bytes: Optional[bytes] = None
         return True
 
     try:
-        chunks = _split_text_by_bytes(content, max_bytes=4000)
+        chunks = _split_wecom_message(content, max_bytes=4000)
         total = len(chunks)
         for idx, chunk in enumerate(chunks, 1):
             page_marker = f"\n\n📄 ({idx}/{total})" if total > 1 else ""
@@ -719,28 +719,23 @@ def send_wecom(content: str, config: Config, image_bytes: Optional[bytes] = None
 # ---------------------------------------------------------------------------
 
 def send_report(content: str, config: Config) -> dict:
-    """
-    同时尝试所有已配置的通知渠道
-
-    Returns:
-        {"telegram": bool, "email": bool, "pushplus": bool, "wecom": bool}
-    """
+    """同时尝试所有已配置的通知渠道。"""
     results = {}
     requested_image_channels = [
         ch for ch in config.markdown_to_image_channels if ch in _SUPPORTED_IMAGE_CHANNELS
     ]
     image_bytes: Optional[bytes] = None
     if requested_image_channels:
-        image_bytes = _markdown_to_image(content, config.markdown_to_image_max_chars)
+        image_bytes = _render_report_image(content, config.markdown_to_image_max_chars)
 
     if config.has_telegram():
-        tg_image = image_bytes if _channel_wants_image(config, "telegram") else None
+        tg_image = image_bytes if _channel_uses_report_image(config, "telegram") else None
         results["telegram"] = send_telegram(content, config, image_bytes=tg_image)
     else:
         logger.info("Telegram 未配置，跳过")
 
     if config.has_email():
-        email_image = image_bytes if _channel_wants_image(config, "email") else None
+        email_image = image_bytes if _channel_uses_report_image(config, "email") else None
         results["email"] = send_email(content, config, image_bytes=email_image)
     else:
         logger.info("邮件未配置，跳过")
@@ -751,7 +746,7 @@ def send_report(content: str, config: Config) -> dict:
         logger.info("PushPlus 未配置，跳过")
 
     if config.wecom_webhook:
-        wecom_image = image_bytes if _channel_wants_image(config, "wecom") else None
+        wecom_image = image_bytes if _channel_uses_report_image(config, "wecom") else None
         results["wecom"] = send_wecom(content, config, image_bytes=wecom_image)
     else:
         logger.info("企业微信未配置，跳过")

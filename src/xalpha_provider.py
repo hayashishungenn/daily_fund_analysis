@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Minimal xalpha-compatible fund data adapter.
-
-This module reuses the same public Tiantian/Eastmoney endpoints and parsing
-strategy used by refraction-ray/xalpha, but keeps the implementation local so
-the project can stay on pandas>=2 without taking xalpha's current pandas<2 pin.
+xalpha 兼容基金数据适配层
+- 复用天天基金 / 东方财富公开接口
+- 本地保留解析逻辑，避免受 xalpha 当前 pandas 版本约束
 """
 
 from __future__ import annotations
@@ -80,7 +78,7 @@ def _extract_assignment(page_text: str, variable: str) -> Any:
     try:
         return ast.literal_eval(payload.replace("null", "None"))
     except Exception:
-        logger.debug("xalpha payload parse failed for %s", variable, exc_info=True)
+        logger.debug("xalpha 页面变量解析失败: %s", variable, exc_info=True)
         return None
 
 
@@ -91,7 +89,7 @@ def _extract_jsonp_payload(text: str) -> Optional[Dict[str, Any]]:
     try:
         payload = ast.literal_eval(match.group(1).replace("null", "None"))
     except Exception:
-        logger.debug("jsonp payload parse failed", exc_info=True)
+        logger.debug("JSONP 载荷解析失败", exc_info=True)
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -200,17 +198,17 @@ def fetch_fund_realtime_info(code: str) -> Dict[str, Any]:
     try:
         valuation = fetch_fund_valuation(code)
     except Exception:
-        logger.debug("[%s] valuation fetch failed", code, exc_info=True)
+        logger.debug("[%s] 估值接口获取失败", code, exc_info=True)
     try:
         latest_snapshot = fetch_fund_latest_nav_snapshot(code)
     except Exception:
-        logger.debug("[%s] latest nav snapshot fetch failed", code, exc_info=True)
+        logger.debug("[%s] 最新净值快照获取失败", code, exc_info=True)
 
     page_text = ""
     try:
         page_text = _request_text(f"http://fund.eastmoney.com/{code}.html")
     except Exception:
-        logger.debug("[%s] fund detail page fetch failed", code, exc_info=True)
+        logger.debug("[%s] 基金详情页获取失败", code, exc_info=True)
     soup = BeautifulSoup(page_text or "", "lxml")
 
     name = ""
@@ -293,7 +291,7 @@ def fetch_fund_nav_history(code: str) -> pd.DataFrame:
     net_values = _extract_assignment(page_text, "Data_netWorthTrend")
     total_values = _extract_assignment(page_text, "Data_ACWorthTrend")
     if not net_values:
-        raise ValueError("xalpha nav endpoint returned empty data")
+        raise ValueError("xalpha 净值接口返回空数据")
 
     rows: list[dict[str, Any]] = []
     for item in net_values:
@@ -318,7 +316,7 @@ def fetch_fund_nav_history(code: str) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     if df.empty:
-        raise ValueError("xalpha nav endpoint returned no usable rows")
+        raise ValueError("xalpha 净值接口没有可用记录")
     df = df.dropna(subset=["date", "netvalue"]).sort_values("date").reset_index(drop=True)
 
     if isinstance(total_values, list) and len(total_values) == len(df):
@@ -346,7 +344,7 @@ def _fetch_holdings_table(
     elif category == "bond":
         endpoint = "zqcc"
     else:
-        raise ValueError(f"unsupported holdings category: {category}")
+        raise ValueError(f"不支持的持仓类型: {category}")
 
     page_text = _request_text(
         (

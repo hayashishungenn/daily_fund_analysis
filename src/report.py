@@ -779,17 +779,7 @@ def generate_report(
     report_days: int = 30,
     report_type: str = "full",
 ) -> str:
-    """
-    生成报告（支持 summary / simple / full 三种格式）
-
-    Args:
-        results: [(FundAnalysisData, analysis_dict), ...]
-        report_days: 分析天数
-        report_type: 报告类型，summary / simple / full
-
-    Returns:
-        Markdown 字符串
-    """
+    """生成报告，支持 `summary`、`simple`、`full` 三种格式。"""
     now = datetime.now(TZ_CN)
     rt = (report_type or "full").strip().lower()
     if rt == "summary":
